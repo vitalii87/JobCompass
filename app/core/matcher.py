@@ -4,8 +4,15 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterable
+from collections.abc import Callable
 
 from app.core.models import CandidateProfile, JobPosting, MatchLevel, MatchResult
+from app.core.taxonomy import (
+    canonical_language,
+    canonical_role,
+    canonical_skill,
+    normalize_term,
+)
 
 
 _TOKEN_PATTERN = re.compile(r"[^\W_]+(?:[+#.-][^\W_]+)*", re.UNICODE)
@@ -20,13 +27,16 @@ def _tokens(value: str) -> set[str]:
 
 
 def _matching_values(
-    candidate_values: Iterable[str], required_values: Iterable[str]
+    candidate_values: Iterable[str],
+    required_values: Iterable[str],
+    normalizer: Callable[[str], str] = lambda value: value,
 ) -> tuple[tuple[str, ...], tuple[str, ...]]:
-    candidate_keys = {_key(value) for value in candidate_values}
+    candidate_keys = {normalize_term(normalizer(value)) for value in candidate_values}
     matched: list[str] = []
     missing: list[str] = []
     for value in required_values:
-        (matched if _key(value) in candidate_keys else missing).append(value)
+        key = normalize_term(normalizer(value))
+        (matched if key in candidate_keys else missing).append(value)
     return tuple(matched), tuple(missing)
 
 
@@ -36,11 +46,14 @@ def _role_score(desired_roles: tuple[str, ...], title: str) -> tuple[float, tupl
 
     normalized_title = _key(title)
     title_tokens = _tokens(title)
+    canonical_title = canonical_role(title)
     scored_roles: list[tuple[float, str]] = []
     for role in desired_roles:
         normalized_role = _key(role)
         role_tokens = _tokens(role)
-        if normalized_role and normalized_role in normalized_title:
+        if normalize_term(canonical_role(role)) == normalize_term(canonical_title):
+            score = 1.0
+        elif normalized_role and normalized_role in normalized_title:
             score = 1.0
         elif role_tokens:
             score = len(role_tokens & title_tokens) / len(role_tokens)
@@ -55,10 +68,10 @@ def _role_score(desired_roles: tuple[str, ...], title: str) -> tuple[float, tupl
 
 def _location_score(profile: CandidateProfile, job: JobPosting) -> float | None:
     if profile.remote_only:
-        return 1.0 if job.remote is True else 0.0
+        return 1.0 if job.is_remote else 0.0
     if not profile.preferred_locations:
         return None
-    if job.remote is True:
+    if job.is_remote:
         return 1.0
 
     location = _key(job.location)
@@ -89,10 +102,10 @@ class JobMatcher:
         has_critical_gap = False
 
         required_matches, missing_required = _matching_values(
-            profile.skills, job.required_skills
+            profile.skills, job.required_skills, canonical_skill
         )
         preferred_matches, _ = _matching_values(
-            profile.skills, job.preferred_skills
+            profile.skills, job.preferred_skills, canonical_skill
         )
         matched_skills = required_matches + preferred_matches
 
@@ -150,7 +163,7 @@ class JobMatcher:
 
         if job.required_languages:
             language_matches, missing_languages = _matching_values(
-                profile.languages, job.required_languages
+                profile.languages, job.required_languages, canonical_language
             )
             raw_components["languages"] = (
                 len(language_matches) / len(job.required_languages)

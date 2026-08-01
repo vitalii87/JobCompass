@@ -100,6 +100,48 @@ class MatchLevel(StrEnum):
     WEAK = "weak"
 
 
+class WorkMode(StrEnum):
+    REMOTE = "remote"
+    HYBRID = "hybrid"
+    OFFICE = "office"
+    UNKNOWN = "unknown"
+
+
+@dataclass(frozen=True, slots=True)
+class RequirementEvidence:
+    field: str
+    value: str
+    classification: str
+    excerpt: str
+    confidence: str = "high"
+
+    def __post_init__(self) -> None:
+        for field_name in ("field", "value", "classification", "excerpt", "confidence"):
+            cleaned = _text(getattr(self, field_name), field_name)
+            if not cleaned:
+                raise ValueError(f"{field_name} is required")
+            object.__setattr__(self, field_name, cleaned)
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> RequirementEvidence:
+        return cls(
+            field=_text(data.get("field"), "field"),
+            value=_text(data.get("value"), "value"),
+            classification=_text(data.get("classification"), "classification"),
+            excerpt=_text(data.get("excerpt"), "excerpt"),
+            confidence=_text(data.get("confidence", "high"), "confidence"),
+        )
+
+    def to_dict(self) -> dict[str, str]:
+        return {
+            "field": self.field,
+            "value": self.value,
+            "classification": self.classification,
+            "excerpt": self.excerpt,
+            "confidence": self.confidence,
+        }
+
+
 @dataclass(frozen=True, slots=True)
 class CandidateProfile:
     full_name: str = ""
@@ -186,8 +228,10 @@ class JobPosting:
     required_languages: tuple[str, ...] = ()
     minimum_years_experience: float | None = None
     remote: bool | None = None
+    work_mode: WorkMode = WorkMode.UNKNOWN
     employment_type: str | None = None
     published_at: datetime | None = None
+    requirement_evidence: tuple[RequirementEvidence, ...] = ()
 
     def __post_init__(self) -> None:
         for field_name in ("source", "external_id", "title", "company"):
@@ -225,6 +269,19 @@ class JobPosting:
             ),
         )
         object.__setattr__(self, "remote", _optional_bool(self.remote, "remote"))
+        if not isinstance(self.work_mode, WorkMode):
+            try:
+                object.__setattr__(self, "work_mode", WorkMode(self.work_mode))
+            except ValueError as error:
+                raise ValueError(
+                    "work_mode must be remote, hybrid, office, or unknown"
+                ) from error
+        if self.work_mode is WorkMode.UNKNOWN and self.remote is True:
+            object.__setattr__(self, "work_mode", WorkMode.REMOTE)
+        elif self.work_mode is not WorkMode.UNKNOWN and self.remote is None:
+            object.__setattr__(
+                self, "remote", self.work_mode is WorkMode.REMOTE
+            )
         object.__setattr__(
             self,
             "employment_type",
@@ -232,10 +289,18 @@ class JobPosting:
         )
         if self.published_at is not None and not isinstance(self.published_at, datetime):
             raise ValueError("published_at must be a datetime or null")
+        evidence = tuple(self.requirement_evidence)
+        if any(not isinstance(item, RequirementEvidence) for item in evidence):
+            raise ValueError("requirement_evidence must contain evidence objects")
+        object.__setattr__(self, "requirement_evidence", evidence)
 
     @property
     def job_id(self) -> str:
         return f"{self.source}:{self.external_id}"
+
+    @property
+    def is_remote(self) -> bool:
+        return self.work_mode is WorkMode.REMOTE or self.remote is True
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> JobPosting:
@@ -261,10 +326,18 @@ class JobPosting:
                 "minimum_years_experience",
             ),
             remote=_optional_bool(data.get("remote"), "remote"),
+            work_mode=WorkMode(
+                _text(data.get("work_mode", WorkMode.UNKNOWN.value), "work_mode")
+            ),
             employment_type=_optional_text(
                 data.get("employment_type"), "employment_type"
             ),
             published_at=_parse_datetime(data.get("published_at"), "published_at"),
+            requirement_evidence=tuple(
+                RequirementEvidence.from_dict(item)
+                for item in data.get("requirement_evidence", ())
+                if isinstance(item, Mapping)
+            ),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -281,10 +354,14 @@ class JobPosting:
             "required_languages": list(self.required_languages),
             "minimum_years_experience": self.minimum_years_experience,
             "remote": self.remote,
+            "work_mode": self.work_mode.value,
             "employment_type": self.employment_type,
             "published_at": (
                 self.published_at.isoformat() if self.published_at is not None else None
             ),
+            "requirement_evidence": [
+                item.to_dict() for item in self.requirement_evidence
+            ],
         }
 
 

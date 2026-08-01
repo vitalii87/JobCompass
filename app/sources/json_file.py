@@ -7,6 +7,8 @@ from pathlib import Path
 from typing import Any
 
 from app.core.models import JobPosting
+from app.core.taxonomy import text_matches_keyword
+from app.parsing import enrich_job_posting
 from app.sources.base import SearchQuery
 
 
@@ -39,7 +41,7 @@ class JsonFileSource:
             if not isinstance(item, dict):
                 raise ValueError(f"Job at index {index} must be an object")
             try:
-                jobs.append(JobPosting.from_dict(item))
+                jobs.append(enrich_job_posting(JobPosting.from_dict(item)))
             except (TypeError, ValueError) as error:
                 raise ValueError(f"Invalid job at index {index}: {error}") from error
         return jobs
@@ -47,16 +49,20 @@ class JsonFileSource:
     @staticmethod
     def _matches(job: JobPosting, query: SearchQuery) -> bool:
         searchable = f"{job.title} {job.description}".casefold()
-        if query.roles and not any(role.casefold() in searchable for role in query.roles):
-            return False
-        if query.keywords and not all(
-            keyword.casefold() in searchable for keyword in query.keywords
+        if query.roles and not any(
+            text_matches_keyword(job.title, role) for role in query.roles
         ):
             return False
-        if query.remote_only and job.remote is not True:
+        if query.keywords and not all(
+            text_matches_keyword(searchable, keyword) for keyword in query.keywords
+        ):
             return False
-        if query.locations and job.remote is not True:
+        if query.remote_only and not job.is_remote:
+            return False
+        if query.locations and not job.is_remote:
             location = job.location.casefold()
-            if not any(value.casefold() in location for value in query.locations):
+            if not any(
+                value.name.casefold() in location for value in query.location_queries
+            ):
                 return False
         return True

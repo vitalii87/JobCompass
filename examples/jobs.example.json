@@ -20,6 +20,7 @@
       ],
       "minimum_years_experience": 2,
       "remote": true,
+      "work_mode": "remote",
       "employment_type": "full-time",
       "published_at": "2026-08-01T09:00:00+00:00"
     },
@@ -44,6 +45,7 @@
       ],
       "minimum_years_experience": 4,
       "remote": false,
+      "work_mode": "hybrid",
       "employment_type": "full-time",
       "published_at": "2026-07-30T11:30:00+00:00"
     },
@@ -64,8 +66,20 @@
       ],
       "minimum_years_experience": 3,
       "remote": false,
+      "work_mode": "office",
       "employment_type": "full-time",
       "published_at": "2026-07-29T08:00:00+00:00"
+    },
+    {
+      "source": "demo-deutsch",
+      "external_id": "de-backend-404",
+      "title": "Backend-Entwickler Python (m/w/d)",
+      "company": "Muster Digital GmbH",
+      "location": "Stuttgart",
+      "url": "https://example.test/jobs/de-backend-404",
+      "description": "Ihr Profil\nFundierte Kenntnisse in Python und SQL sind erforderlich.\nErfahrung mit Docker und Git ist von Vorteil.\nMindestens 2 Jahre Berufserfahrung.\nSehr gute Deutschkenntnisse.\nWir bieten\nHybrides Arbeiten mit zwei Tagen Homeoffice.",
+      "employment_type": "Vollzeit",
+      "published_at": "2026-08-01T12:00:00+00:00"
     }
   ]
 }

@@ -8,6 +8,7 @@ from app.core.models import (
     ApplicationStatus,
     CandidateProfile,
     JobPosting,
+    WorkMode,
 )
 
 
@@ -56,6 +57,21 @@ class JobPostingTests(unittest.TestCase):
                 "Archived",
             },
         )
+
+    def test_work_mode_is_backward_compatible_with_remote(self) -> None:
+        remote_job = JobPosting(
+            source="board", external_id="remote", title="Developer", company="ACME",
+            remote=True,
+        )
+        hybrid_job = JobPosting(
+            source="board", external_id="hybrid", title="Developer", company="ACME",
+            work_mode=WorkMode.HYBRID,
+        )
+
+        self.assertEqual(remote_job.work_mode, WorkMode.REMOTE)
+        self.assertTrue(remote_job.is_remote)
+        self.assertEqual(hybrid_job.remote, False)
+        self.assertFalse(hybrid_job.is_remote)
 
 
 class ApplicationRecordTests(unittest.TestCase):

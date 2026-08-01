@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from app.core.models import CandidateProfile, JobPosting
+from app.core.models import CandidateProfile, JobPosting, WorkMode
 from app.core.search import SearchFilters, search_jobs
 
 
@@ -55,6 +55,56 @@ class SearchTests(unittest.TestCase):
         )
 
         self.assertEqual(results, [])
+
+    def test_keyword_list_uses_and_logic(self) -> None:
+        results = search_jobs(
+            self.profile,
+            self.jobs,
+            SearchFilters(keywords=("Python", "missing phrase")),
+        )
+
+        self.assertEqual(results, [])
+
+    def test_desired_role_list_uses_or_logic(self) -> None:
+        results = search_jobs(
+            self.profile,
+            self.jobs,
+            SearchFilters(roles=("Office Manager", "Python Developer")),
+        )
+
+        self.assertEqual([item.job.job_id for item in results], ["board-a:1"])
+
+    def test_slider_radius_keeps_city_filter_for_local_json(self) -> None:
+        filters = SearchFilters(locations=("Berlin",), location_radius_km=50)
+        results = search_jobs(
+            self.profile,
+            self.jobs,
+            filters,
+        )
+
+        self.assertEqual([item.job.job_id for item in results], ["board-a:1"])
+        self.assertEqual(filters.location_queries[0].radius_km, 50)
+
+    def test_invalid_slider_radius_is_rejected(self) -> None:
+        with self.assertRaisesRegex(ValueError, "between 0 and 500"):
+            SearchFilters(locations=("Berlin",), location_radius_km=700)
+
+    def test_without_remote_only_all_work_modes_are_included(self) -> None:
+        jobs = [
+            JobPosting(
+                source="modes",
+                external_id=mode.value,
+                title="Python Developer",
+                company=mode.value,
+                required_skills=("Python",),
+                work_mode=mode,
+            )
+            for mode in (WorkMode.REMOTE, WorkMode.HYBRID, WorkMode.OFFICE)
+        ]
+
+        results = search_jobs(self.profile, jobs, SearchFilters(remote_only=False))
+
+        self.assertEqual(len(results), 3)
 
 
 if __name__ == "__main__":

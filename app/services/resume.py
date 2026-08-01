@@ -11,11 +11,28 @@ from typing import Any
 from xml.etree import ElementTree
 
 from app.core.models import CandidateProfile
+from app.core.taxonomy import (
+    canonical_skill,
+    canonicalize_values,
+    extract_skill_mentions,
+)
 
 
 _EMAIL_PATTERN = re.compile(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", re.I)
 _YEARS_PATTERN = re.compile(
-    r"(?P<years>\d+(?:[.,]\d+)?)\s*(?:years?|yrs?|рок(?:и|ів)?|р\.)\b",
+    r"(?P<years>\d+(?:[.,]\d+)?)\s*(?:years?|yrs?|jahr(?:e|en)?|рок(?:и|ів)?|р\.)\b",
+    re.I,
+)
+_UNLABELED_EXPERIENCE_PATTERN = re.compile(
+    r"(?P<years>\d+(?:[.,]\d+)?)\s*"
+    r"(?:years?|yrs?|jahr(?:e|en)?|рок(?:и|ів)?|р\.)\s*"
+    r"(?:of\s+)?(?:relevant\s+|professional\s+)?"
+    r"(?:experience|berufserfahrung|erfahrung|досвіду)",
+    re.I,
+)
+_LANGUAGE_MENTION_PATTERN = re.compile(
+    r"\b(?P<language>Deutsch|German|Englisch|English|Ukrainisch|Ukrainian)\b"
+    r"(?:\s*[-:,(]?\s*(?P<level>[ABC][12]|Muttersprache|native|fließend|fluent))?",
     re.I,
 )
 _LABEL_PATTERN = re.compile(r"^\s*([^:]{2,40})\s*:\s*(.*)$")
@@ -33,25 +50,35 @@ _LABELS = {
     "телефон": "phone",
     "summary": "summary",
     "profile": "summary",
+    "profil": "summary",
     "про себе": "summary",
     "профіль": "summary",
     "desired role": "desired_roles",
     "desired roles": "desired_roles",
     "position": "desired_roles",
+    "wunschposition": "desired_roles",
+    "gewünschte position": "desired_roles",
     "бажана посада": "desired_roles",
     "посада": "desired_roles",
     "skills": "skills",
     "technical skills": "skills",
+    "kenntnisse": "skills",
+    "fähigkeiten": "skills",
+    "technische kenntnisse": "skills",
     "навички": "skills",
     "технічні навички": "skills",
     "languages": "languages",
+    "sprachen": "languages",
     "мови": "languages",
     "location": "preferred_locations",
     "preferred location": "preferred_locations",
+    "wohnort": "preferred_locations",
+    "standort": "preferred_locations",
     "локація": "preferred_locations",
     "бажана локація": "preferred_locations",
     "experience": "experience",
     "years of experience": "experience",
+    "berufserfahrung": "experience",
     "досвід": "experience",
 }
 _LIST_FIELDS = {"desired_roles", "skills", "languages", "preferred_locations"}
@@ -90,6 +117,58 @@ def _docx_text(path: Path) -> str:
         if text:
             paragraphs.append(text)
     return "\n".join(paragraphs)
+
+
+def _pdf_text(path: Path) -> str:
+    try:
+        from pypdf import PdfReader
+    except ImportError as error:
+        raise ValueError(
+            "Для читання PDF потрібен локальний пакет pypdf. "
+            "Встановіть залежності командою: py -3 -m pip install -r requirements.txt"
+        ) from error
+
+    try:
+        reader = PdfReader(str(path))
+        if reader.is_encrypted and not reader.decrypt(""):
+            raise ValueError(
+                "PDF захищений паролем. Збережіть незахищену копію та спробуйте ще раз."
+            )
+        pages = [page.extract_text() or "" for page in reader.pages]
+    except ValueError:
+        raise
+    except Exception as error:
+        raise ValueError(f"Не вдалося прочитати PDF-резюме: {path}") from error
+
+    text = "\n\n".join(page.strip() for page in pages if page.strip()).strip()
+    if not text:
+        raise ValueError(
+            "У PDF не знайдено текстового шару. Ймовірно, це скан або зображення; "
+            "для такого файла потрібне OCR."
+        )
+    return text
+
+
+def _extract_language_mentions(text: str) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    canonical_names = {
+        "deutsch": "German",
+        "german": "German",
+        "englisch": "English",
+        "english": "English",
+        "ukrainisch": "Ukrainian",
+        "ukrainian": "Ukrainian",
+    }
+    for match in _LANGUAGE_MENTION_PATTERN.finditer(text):
+        canonical = canonical_names[match.group("language").casefold()]
+        level = match.group("level") or ""
+        value = f"{canonical} {level.upper() if len(level) == 2 else level}".strip()
+        key = canonical.casefold()
+        if key not in seen:
+            result.append(value)
+            seen.add(key)
+    return result
 
 
 def _profile_from_text(text: str) -> ResumeLoadResult:
@@ -137,6 +216,18 @@ def _profile_from_text(text: str) -> ResumeLoadResult:
         else:
             scalar.setdefault(field_name, value)
 
+    lists["skills"] = list(
+        canonicalize_values(
+            (*lists["skills"], *extract_skill_mentions(text)), canonical_skill
+        )
+    )
+    if not lists["languages"]:
+        lists["languages"].extend(_extract_language_mentions(text))
+    if experience is None:
+        match = _UNLABELED_EXPERIENCE_PATTERN.search(text)
+        if match:
+            experience = float(match.group("years").replace(",", "."))
+
     if "email" not in scalar:
         email_match = _EMAIL_PATTERN.search(text)
         if email_match:
@@ -168,17 +259,18 @@ def _profile_from_text(text: str) -> ResumeLoadResult:
         )
     )
     warnings: list[str] = [
-        "Перевірте всі витягнуті дані перед збереженням профілю."
+        "Перевірте автоматично витягнуті дані; за потреби їх можна відредагувати."
     ]
     if extracted_fields <= 1:
         warnings.append(
-            "Структурованих полів майже не знайдено; заповніть профіль вручну."
+            "Структурованих полів майже не знайдено, тому оцінювання може бути "
+            "менш точним. Ручне заповнення полів залишається необов’язковим."
         )
     return ResumeLoadResult(profile=profile, raw_text=text, warnings=tuple(warnings))
 
 
 def load_resume(path: str | Path) -> ResumeLoadResult:
-    """Load JSON, TXT, or DOCX without sending resume data anywhere."""
+    """Load JSON, TXT, DOCX, or text-based PDF entirely locally."""
 
     resume_path = Path(path)
     suffix = resume_path.suffix.casefold()
@@ -200,7 +292,5 @@ def load_resume(path: str | Path) -> ResumeLoadResult:
     if suffix == ".docx":
         return _profile_from_text(_docx_text(resume_path))
     if suffix == ".pdf":
-        raise ValueError(
-            "PDF parsing is not available yet. Use JSON, TXT, or DOCX for now."
-        )
-    raise ValueError("Supported resume formats: JSON, TXT, DOCX")
+        return _profile_from_text(_pdf_text(resume_path))
+    raise ValueError("Supported resume formats: JSON, TXT, DOCX, PDF")

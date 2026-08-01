@@ -48,6 +48,30 @@ class JsonFileSourceTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 JsonFileSource(path).search(SearchQuery())
 
+    def test_german_raw_description_is_enriched_during_import(self) -> None:
+        payload = [
+            {
+                "source": "german-board",
+                "external_id": "de-1",
+                "title": "Python-Entwickler",
+                "company": "Beispiel GmbH",
+                "description": (
+                    "Ihr Profil\n"
+                    "Fundierte Kenntnisse in Python sind erforderlich.\n"
+                    "Docker ist von Vorteil."
+                ),
+            }
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "german-jobs.json"
+            path.write_text(json.dumps(payload), encoding="utf-8")
+
+            job = JsonFileSource(path).search(SearchQuery())[0]
+
+        self.assertEqual(job.required_skills, ("Python",))
+        self.assertEqual(job.preferred_skills, ("Docker",))
+        self.assertTrue(job.requirement_evidence)
+
 
 if __name__ == "__main__":
     unittest.main()

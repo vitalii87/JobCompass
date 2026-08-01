@@ -75,8 +75,11 @@ def _print_jobs(store: LocalJsonStore) -> None:
         print("No vacancies stored.")
         return
     for job in jobs:
-        remote = "remote" if job.remote is True else job.location or "location unknown"
-        print(f"{job.job_id} | {job.title} | {job.company} | {remote}")
+        place = job.location or "location unknown"
+        print(
+            f"{job.job_id} | {job.title} | {job.company} | "
+            f"{job.work_mode.value} | {place}"
+        )
 
 
 def _print_matches(

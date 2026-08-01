@@ -8,6 +8,8 @@ from app.core.models import (
     JobPosting,
     MatchLevel,
     MatchResult,
+    RequirementEvidence,
+    WorkMode,
 )
 
 __all__ = [
@@ -18,4 +20,6 @@ __all__ = [
     "JobPosting",
     "MatchLevel",
     "MatchResult",
+    "RequirementEvidence",
+    "WorkMode",
 ]
