@@ -1,0 +1,71 @@
+{
+  "jobs": [
+    {
+      "source": "demo-board-a",
+      "external_id": "python-101",
+      "title": "Python Developer",
+      "company": "Example GmbH",
+      "location": "Berlin",
+      "url": "https://example.test/jobs/python-101",
+      "description": "Backend development with Python, SQL, Git, and Docker.",
+      "required_skills": [
+        "Python",
+        "SQL"
+      ],
+      "preferred_skills": [
+        "Docker"
+      ],
+      "required_languages": [
+        "English"
+      ],
+      "minimum_years_experience": 2,
+      "remote": true,
+      "employment_type": "full-time",
+      "published_at": "2026-08-01T09:00:00+00:00"
+    },
+    {
+      "source": "demo-board-b",
+      "external_id": "backend-202",
+      "title": "Backend Engineer",
+      "company": "Sample Systems",
+      "location": "Hamburg",
+      "url": "https://example.test/jobs/backend-202",
+      "description": "Backend services using Python, PostgreSQL, and Kubernetes.",
+      "required_skills": [
+        "Python",
+        "PostgreSQL",
+        "Kubernetes"
+      ],
+      "preferred_skills": [
+        "Git"
+      ],
+      "required_languages": [
+        "English"
+      ],
+      "minimum_years_experience": 4,
+      "remote": false,
+      "employment_type": "full-time",
+      "published_at": "2026-07-30T11:30:00+00:00"
+    },
+    {
+      "source": "demo-board-a",
+      "external_id": "java-303",
+      "title": "Java Developer",
+      "company": "Demo Tech",
+      "location": "Munich",
+      "url": "https://example.test/jobs/java-303",
+      "description": "Enterprise development with Java and Spring.",
+      "required_skills": [
+        "Java",
+        "Spring"
+      ],
+      "required_languages": [
+        "German"
+      ],
+      "minimum_years_experience": 3,
+      "remote": false,
+      "employment_type": "full-time",
+      "published_at": "2026-07-29T08:00:00+00:00"
+    }
+  ]
+}

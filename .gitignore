@@ -15,9 +15,11 @@ venv/
 .coverage
 htmlcov/
 
+# Local JobCompass data
+data/
+
 # IDE and operating-system files
 .idea/
 .vscode/
 .DS_Store
 Thumbs.db
-

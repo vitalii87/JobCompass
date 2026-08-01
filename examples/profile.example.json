@@ -1,0 +1,24 @@
+{
+  "full_name": "Candidate Name",
+  "email": "candidate@example.test",
+  "phone": "+49 000 000000",
+  "summary": "Backend developer focused on reliable Python applications.",
+  "desired_roles": [
+    "Python Developer",
+    "Backend Developer"
+  ],
+  "skills": [
+    "Python",
+    "SQL",
+    "Git"
+  ],
+  "languages": [
+    "English",
+    "Ukrainian"
+  ],
+  "years_experience": 3,
+  "preferred_locations": [
+    "Berlin"
+  ],
+  "remote_only": false
+}
