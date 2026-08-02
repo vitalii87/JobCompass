@@ -18,7 +18,7 @@ class SourceError(ValueError):
 @dataclass(frozen=True, slots=True)
 class JsonHttpClient:
     timeout: float = 20.0
-    user_agent: str = "JobCompass/0.5 (local desktop job search)"
+    user_agent: str = "JobCompass/0.6 (local desktop job search)"
 
     def get_json(
         self,

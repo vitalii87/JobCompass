@@ -384,6 +384,74 @@ class MatchResult:
 
 
 @dataclass(frozen=True, slots=True)
+class CoverLetterPreparation:
+    """Locally saved cover-letter material for one vacancy."""
+
+    job_id: str
+    draft: str
+    prompt: str
+    evidence_summary: str = ""
+    language: str = "auto"
+    tone: str = "professional"
+    length: str = "standard"
+    focus: str = ""
+    updated_at: datetime = field(default_factory=utc_now)
+
+    def __post_init__(self) -> None:
+        for field_name in (
+            "job_id",
+            "draft",
+            "prompt",
+            "evidence_summary",
+            "language",
+            "tone",
+            "length",
+            "focus",
+        ):
+            object.__setattr__(
+                self, field_name, _text(getattr(self, field_name), field_name)
+            )
+        if not self.job_id:
+            raise ValueError("job_id is required")
+        if not self.draft and not self.prompt:
+            raise ValueError("draft or prompt is required")
+        if self.updated_at.tzinfo is None:
+            object.__setattr__(
+                self, "updated_at", self.updated_at.replace(tzinfo=timezone.utc)
+            )
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> CoverLetterPreparation:
+        return cls(
+            job_id=_text(data.get("job_id"), "job_id"),
+            draft=_text(data.get("draft"), "draft"),
+            prompt=_text(data.get("prompt"), "prompt"),
+            evidence_summary=_text(
+                data.get("evidence_summary"), "evidence_summary"
+            ),
+            language=_text(data.get("language", "auto"), "language"),
+            tone=_text(data.get("tone", "professional"), "tone"),
+            length=_text(data.get("length", "standard"), "length"),
+            focus=_text(data.get("focus"), "focus"),
+            updated_at=_parse_datetime(data.get("updated_at"), "updated_at")
+            or utc_now(),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "job_id": self.job_id,
+            "draft": self.draft,
+            "prompt": self.prompt,
+            "evidence_summary": self.evidence_summary,
+            "language": self.language,
+            "tone": self.tone,
+            "length": self.length,
+            "focus": self.focus,
+            "updated_at": self.updated_at.isoformat(),
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class ApplicationEvent:
     status: ApplicationStatus
     occurred_at: datetime = field(default_factory=utc_now)

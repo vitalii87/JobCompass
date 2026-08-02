@@ -5,6 +5,7 @@ __pycache__/
 # Virtual environments
 .venv/
 venv/
+.build-venv/
 
 # Test and tooling caches
 .pytest_cache/
@@ -23,3 +24,10 @@ data/
 .vscode/
 .DS_Store
 Thumbs.db
+
+# Windows build tools and generated distributions
+.tools/
+build/
+dist/
+release/
+.portable-staging/

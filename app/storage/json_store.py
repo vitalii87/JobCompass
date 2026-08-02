@@ -15,6 +15,7 @@ from app.core.models import (
     ApplicationRecord,
     ApplicationStatus,
     CandidateProfile,
+    CoverLetterPreparation,
     JobPosting,
     utc_now,
 )
@@ -47,6 +48,44 @@ class LocalJsonStore:
     def save_profile(self, profile: CandidateProfile) -> None:
         data = self._read()
         data["profile"] = profile.to_dict()
+        self._write(data)
+
+    def list_cover_letter_preparations(self) -> list[CoverLetterPreparation]:
+        return [
+            CoverLetterPreparation.from_dict(item)
+            for item in self._read()["cover_letters"]
+        ]
+
+    def get_cover_letter_preparation(
+        self, job_id: str
+    ) -> CoverLetterPreparation | None:
+        return next(
+            (
+                preparation
+                for preparation in self.list_cover_letter_preparations()
+                if preparation.job_id == job_id
+            ),
+            None,
+        )
+
+    def save_cover_letter_preparation(
+        self, preparation: CoverLetterPreparation
+    ) -> None:
+        if self.get_job(preparation.job_id) is None:
+            raise ValueError(f"Unknown job: {preparation.job_id}")
+
+        data = self._read()
+        preparations = [
+            CoverLetterPreparation.from_dict(item)
+            for item in data["cover_letters"]
+        ]
+        preparations = [
+            preparation if item.job_id == preparation.job_id else item
+            for item in preparations
+        ]
+        if not any(item.job_id == preparation.job_id for item in preparations):
+            preparations.append(preparation)
+        data["cover_letters"] = [item.to_dict() for item in preparations]
         self._write(data)
 
     def save_jobs(self, jobs: list[JobPosting]) -> int:
@@ -143,6 +182,9 @@ class LocalJsonStore:
         ):
             raise ValueError("Storage must contain job and application lists")
         data.setdefault("profile", None)
+        data.setdefault("cover_letters", [])
+        if not isinstance(data["cover_letters"], list):
+            raise ValueError("Storage must contain a cover-letter list")
         return data
 
     def _write(self, data: dict[str, Any]) -> None:
@@ -172,4 +214,5 @@ class LocalJsonStore:
             "profile": None,
             "jobs": [],
             "applications": [],
+            "cover_letters": [],
         }

@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Sequence
 
 from app.interfaces.cli import main as cli_main
+from app.core.paths import default_data_path
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -18,7 +19,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         return launch_gui()
     if arguments[0] == "gui":
         parser = argparse.ArgumentParser(prog="jobcompass gui")
-        parser.add_argument("--data", type=Path, default=Path("data/jobcompass.json"))
+        parser.add_argument("--data", type=Path, default=default_data_path())
         gui_args = parser.parse_args(arguments[1:])
         from app.interfaces.gui import launch_gui
 

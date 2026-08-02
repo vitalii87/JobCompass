@@ -10,11 +10,12 @@ from typing import Any, Sequence
 
 from app.core.matcher import JobMatcher
 from app.core.models import ApplicationStatus, CandidateProfile
+from app.core.paths import default_data_path
 from app.sources import JsonFileSource, SearchQuery
 from app.storage import LocalJsonStore
 
 
-DEFAULT_DATA_PATH = Path("data/jobcompass.json")
+DEFAULT_DATA_PATH = default_data_path()
 
 
 def _build_parser() -> argparse.ArgumentParser:

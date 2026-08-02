@@ -4,7 +4,12 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from app.core.models import ApplicationStatus, CandidateProfile, JobPosting
+from app.core.models import (
+    ApplicationStatus,
+    CandidateProfile,
+    CoverLetterPreparation,
+    JobPosting,
+)
 from app.storage import LocalJsonStore
 
 
@@ -62,6 +67,30 @@ class LocalJsonStoreTests(unittest.TestCase):
 
             with self.assertRaises(ValueError):
                 store.set_application_status("missing:1", ApplicationStatus.APPLIED)
+
+    def test_cover_letter_material_is_saved_per_vacancy(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "jobcompass.json"
+            store = LocalJsonStore(path)
+            job = JobPosting(
+                source="test", external_id="letter", title="PMO", company="ACME"
+            )
+            store.save_jobs([job])
+            preparation = CoverLetterPreparation(
+                job_id=job.job_id,
+                draft="Editable draft",
+                prompt="Grounded prompt",
+                evidence_summary="Confirmed facts",
+                language="de",
+                tone="warm",
+                length="standard",
+                focus="Relocation confirmed",
+            )
+
+            store.save_cover_letter_preparation(preparation)
+            reloaded = LocalJsonStore(path).get_cover_letter_preparation(job.job_id)
+
+            self.assertEqual(reloaded, preparation)
 
 
 if __name__ == "__main__":

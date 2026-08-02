@@ -22,11 +22,18 @@ from tkinter import (
 from tkinter import ttk
 
 from app.core.deduplication import deduplicate_jobs
-from app.core.models import ApplicationStatus, CandidateProfile, JobPosting
+from app.core.models import (
+    ApplicationStatus,
+    CandidateProfile,
+    CoverLetterPreparation,
+    JobPosting,
+)
+from app.core.paths import default_data_path
 from app.core.search import RankedJob, SearchFilters, search_jobs
 from app.services import (
     build_ai_prompt,
     build_cover_letter_draft,
+    build_evidence_summary,
     load_resume,
     suggested_letter_language,
 )
@@ -34,7 +41,7 @@ from app.sources import JsonFileSource, ONLINE_SOURCE_TYPES, SearchQuery
 from app.storage import LocalJsonStore
 
 
-DEFAULT_DATA_PATH = Path("data/jobcompass.json")
+DEFAULT_DATA_PATH = default_data_path()
 
 _COMPONENT_LABELS = {
     "skills": "Навички",
@@ -49,6 +56,18 @@ _WORK_MODE_LABELS = {
     "hybrid": "Hybrid",
     "office": "Office",
     "unknown": "Не вказано",
+}
+
+_LETTER_TONES = {
+    "Професійний": "professional",
+    "Теплий і особистий": "warm",
+    "Лаконічний": "concise",
+}
+
+_LETTER_LENGTHS = {
+    "Короткий (140–180 слів)": "short",
+    "Стандартний (180–250 слів)": "standard",
+    "Розгорнутий (250–320 слів)": "detailed",
 }
 
 
@@ -623,7 +642,9 @@ class JobCompassApp:
                 "Онлайн: Bundesagentur für Arbeit, Arbeitnow і Remotive — доступно.\n"
                 "JSON-імпорт залишається допоміжним режимом для тестів і власних даних.\n"
                 "Резюме: JSON, TXT, DOCX і текстовий PDF — доступно локально.\n"
-                "AI: зовнішні виклики відсутні; можна лише скопіювати промпт."
+                "СЛ, безкоштовний режим: локальна чернетка та покращений промпт — доступно.\n"
+                "СЛ, AI/API режим: заплановано; токени ще не приймаються і зовнішні "
+                "виклики відсутні."
             ),
             justify="left",
         ).grid(row=0, column=0, sticky="w")
@@ -1215,8 +1236,11 @@ class ApplicationPreparationDialog:
             ),
             (
                 "ai",
-                "Створити промпт для AI",
-                "Промпт містить профіль, вакансію, збіги й заборону вигадувати факти.",
+                "Безкоштовний режим: створити промпт для AI",
+                (
+                    "Промпт поєднає оброблені дані резюме, повний контекст "
+                    "вакансії, збіги та правила проти вигадування фактів."
+                ),
             ),
             (
                 "none",
@@ -1285,8 +1309,10 @@ class CoverLetterDialog:
         self.ranked = ranked
         self.window = Toplevel(app.root)
         self.window.title(f"Супровідний лист — {ranked.job.title}")
-        self.window.geometry("850x650")
+        self.window.geometry("940x760")
+        self.window.minsize(820, 650)
         self.window.transient(app.root)
+        saved = app.store.get_cover_letter_preparation(ranked.job.job_id)
 
         container = ttk.Frame(self.window, padding=12)
         container.pack(fill="both", expand=True)
@@ -1304,47 +1330,127 @@ class CoverLetterDialog:
             wraplength=800,
         ).pack(anchor="w", pady=(0, 8))
 
-        language_frame = ttk.Frame(container)
-        language_frame.pack(fill="x", pady=(0, 8))
-        ttk.Label(language_frame, text="Мова листа").pack(side="left")
-        self.letter_language_var = StringVar(value="Автоматично")
+        options_frame = ttk.LabelFrame(
+            container, text="Параметри майбутнього листа", padding=8
+        )
+        options_frame.pack(fill="x", pady=(0, 8))
+        options_frame.columnconfigure(5, weight=1)
+
+        ttk.Label(options_frame, text="Мова").grid(row=0, column=0, sticky="w")
+        language_label = {
+            "auto": "Автоматично",
+            "de": "Deutsch",
+            "en": "English",
+        }.get(saved.language if saved else "auto", "Автоматично")
+        self.letter_language_var = StringVar(value=language_label)
         ttk.Combobox(
-            language_frame,
+            options_frame,
             textvariable=self.letter_language_var,
             values=("Автоматично", "Deutsch", "English"),
             state="readonly",
-            width=16,
-        ).pack(side="left", padx=(8, 6))
+            width=15,
+        ).grid(row=0, column=1, sticky="w", padx=(6, 16))
         detected = (
             "Deutsch" if suggested_letter_language(ranked.job) == "de" else "English"
         )
         ttk.Label(
-            language_frame,
+            options_frame,
             text=f"Визначено: {detected}",
             foreground="#555555",
-        ).pack(side="left")
+        ).grid(row=0, column=2, sticky="w", padx=(0, 18))
+
+        ttk.Label(options_frame, text="Тон").grid(row=0, column=3, sticky="w")
+        tone_label = next(
+            (
+                label
+                for label, value in _LETTER_TONES.items()
+                if value == (saved.tone if saved else "professional")
+            ),
+            "Професійний",
+        )
+        self.letter_tone_var = StringVar(value=tone_label)
+        ttk.Combobox(
+            options_frame,
+            textvariable=self.letter_tone_var,
+            values=tuple(_LETTER_TONES),
+            state="readonly",
+            width=20,
+        ).grid(row=0, column=4, sticky="w", padx=(6, 16))
+
+        ttk.Label(options_frame, text="Довжина").grid(row=0, column=5, sticky="e")
+        length_label = next(
+            (
+                label
+                for label, value in _LETTER_LENGTHS.items()
+                if value == (saved.length if saved else "standard")
+            ),
+            "Стандартний (180–250 слів)",
+        )
+        self.letter_length_var = StringVar(value=length_label)
+        ttk.Combobox(
+            options_frame,
+            textvariable=self.letter_length_var,
+            values=tuple(_LETTER_LENGTHS),
+            state="readonly",
+            width=26,
+        ).grid(row=0, column=6, sticky="e", padx=(6, 0))
+
+        ttk.Label(
+            options_frame,
+            text=(
+                "Особистий акцент або мотивація (необов’язково; вводьте лише "
+                "правдиві факти)"
+            ),
+        ).grid(row=1, column=0, columnspan=7, sticky="w", pady=(8, 3))
+        self.letter_focus_text = Text(options_frame, height=3, wrap="word")
+        self.letter_focus_text.grid(row=2, column=0, columnspan=7, sticky="ew")
+        if saved and saved.focus:
+            self.letter_focus_text.insert("1.0", saved.focus)
         ttk.Button(
-            language_frame, text="Оновити тексти", command=self._regenerate
-        ).pack(side="right")
+            options_frame, text="Оновити тексти", command=self._regenerate
+        ).grid(row=3, column=6, sticky="e", pady=(6, 0))
 
         notebook = ttk.Notebook(container)
         notebook.pack(fill="both", expand=True)
         draft_frame = ttk.Frame(notebook, padding=8)
         prompt_frame = ttk.Frame(notebook, padding=8)
+        evidence_frame = ttk.Frame(notebook, padding=8)
         notebook.add(draft_frame, text="Локальна чернетка")
-        notebook.add(prompt_frame, text="AI-промпт")
+        notebook.add(prompt_frame, text="Безкоштовний AI-промпт")
+        notebook.add(evidence_frame, text="Використані дані й прогалини")
         if initial_tab == "ai":
             notebook.select(prompt_frame)
         draft_frame.rowconfigure(0, weight=1)
         draft_frame.columnconfigure(0, weight=1)
         prompt_frame.rowconfigure(0, weight=1)
         prompt_frame.columnconfigure(0, weight=1)
+        evidence_frame.rowconfigure(0, weight=1)
+        evidence_frame.columnconfigure(0, weight=1)
 
         self.draft_text = Text(draft_frame, wrap="word", font=("Segoe UI", 10))
         self.draft_text.grid(row=0, column=0, sticky="nsew")
         self.prompt_text = Text(prompt_frame, wrap="word", font=("Consolas", 9))
         self.prompt_text.grid(row=0, column=0, sticky="nsew")
-        self._regenerate()
+        self.evidence_text = Text(
+            evidence_frame, wrap="word", font=("Segoe UI", 10), state="disabled"
+        )
+        self.evidence_text.grid(row=0, column=0, sticky="nsew")
+        for frame, widget in (
+            (draft_frame, self.draft_text),
+            (prompt_frame, self.prompt_text),
+            (evidence_frame, self.evidence_text),
+        ):
+            scrollbar = ttk.Scrollbar(
+                frame, orient="vertical", command=widget.yview
+            )
+            widget.configure(yscrollcommand=scrollbar.set)
+            scrollbar.grid(row=0, column=1, sticky="ns")
+        if saved:
+            self.draft_text.insert("1.0", saved.draft)
+            self.prompt_text.insert("1.0", saved.prompt)
+            self._set_evidence_text(saved.evidence_summary)
+        else:
+            self._regenerate()
 
         buttons = ttk.Frame(container)
         buttons.pack(fill="x", pady=(8, 0))
@@ -1357,6 +1463,11 @@ class CoverLetterDialog:
             buttons,
             text="Скопіювати AI-промпт",
             command=lambda: self._copy(self.prompt_text),
+        ).pack(side="left", padx=(6, 0))
+        ttk.Button(
+            buttons,
+            text="Зберегти локально",
+            command=self._save_preparation,
         ).pack(side="left", padx=(6, 0))
         ttk.Button(
             buttons, text="Позначити Draft", command=self._mark_draft
@@ -1386,8 +1497,28 @@ class CoverLetterDialog:
             "English": "en",
         }[self.letter_language_var.get()]
 
+    def _selected_tone(self) -> str:
+        return _LETTER_TONES.get(
+            self.letter_tone_var.get(), "professional"
+        )
+
+    def _selected_length(self) -> str:
+        return _LETTER_LENGTHS.get(
+            self.letter_length_var.get(), "standard"
+        )
+
+    def _focus(self) -> str:
+        return self.letter_focus_text.get("1.0", "end-1c").strip()
+
+    def _set_evidence_text(self, value: str) -> None:
+        self.evidence_text.configure(state="normal")
+        self.evidence_text.delete("1.0", END)
+        self.evidence_text.insert("1.0", value)
+        self.evidence_text.configure(state="disabled")
+
     def _regenerate(self) -> None:
         language = self._selected_language()
+        focus = self._focus()
         self.draft_text.delete("1.0", END)
         self.draft_text.insert(
             "1.0",
@@ -1399,11 +1530,53 @@ class CoverLetterDialog:
         self.prompt_text.insert(
             "1.0",
             build_ai_prompt(
-                self.app.profile, self.ranked.job, self.ranked.match, language
+                self.app.profile,
+                self.ranked.job,
+                self.ranked.match,
+                language,
+                tone=self._selected_tone(),
+                length=self._selected_length(),
+                focus=focus,
             ),
         )
+        self._set_evidence_text(
+            build_evidence_summary(
+                self.app.profile,
+                self.ranked.job,
+                self.ranked.match,
+                focus=focus,
+            )
+        )
+
+    def _save_preparation(self, show_confirmation: bool = True) -> bool:
+        preparation = CoverLetterPreparation(
+            job_id=self.ranked.job.job_id,
+            draft=self.draft_text.get("1.0", "end-1c"),
+            prompt=self.prompt_text.get("1.0", "end-1c"),
+            evidence_summary=self.evidence_text.get("1.0", "end-1c"),
+            language=self._selected_language(),
+            tone=self._selected_tone(),
+            length=self._selected_length(),
+            focus=self._focus(),
+        )
+        try:
+            self.app.store.save_cover_letter_preparation(preparation)
+        except (OSError, ValueError) as error:
+            messagebox.showerror("Не вдалося зберегти", str(error))
+            return False
+        self.app.status_var.set(
+            f"Супровідні матеріали збережено: {self.ranked.job.title}"
+        )
+        if show_confirmation:
+            messagebox.showinfo(
+                "Збережено",
+                "Чернетку, промпт і вибрані параметри збережено локально.",
+            )
+        return True
 
     def _mark_draft(self) -> None:
+        if not self._save_preparation(show_confirmation=False):
+            return
         if self.app._set_status(
             self.ranked.job,
             ApplicationStatus.DRAFT,
@@ -1420,7 +1593,9 @@ class CoverLetterDialog:
                 "відправлена?"
             ),
         )
-        if confirmed and self.app._set_status(
+        if confirmed and self._save_preparation(
+            show_confirmation=False
+        ) and self.app._set_status(
             self.ranked.job,
             ApplicationStatus.APPLIED,
             "Application submitted after cover-letter preparation",
