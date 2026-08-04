@@ -5,6 +5,7 @@ __pycache__/
 # Virtual environments
 .venv/
 venv/
+.build-venv/
 
 # Test and tooling caches
 .pytest_cache/
@@ -15,9 +16,18 @@ venv/
 .coverage
 htmlcov/
 
+# Local JobCompass data
+data/
+
 # IDE and operating-system files
 .idea/
 .vscode/
 .DS_Store
 Thumbs.db
 
+# Windows build tools and generated distributions
+.tools/
+build/
+dist/
+release/
+.portable-staging/
