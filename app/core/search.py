@@ -4,7 +4,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from app.core.location import LocationQuery, build_location_queries
+from app.core.location import (
+    LocationQuery,
+    LocationSelection,
+    build_location_queries,
+)
 from app.core.matcher import JobMatcher
 from app.core.models import CandidateProfile, JobPosting, MatchResult
 from app.core.taxonomy import text_matches_keyword
@@ -21,6 +25,7 @@ class SearchFilters:
     keywords: tuple[str, ...] = ()
     locations: tuple[str, ...] = ()
     location_radius_km: float | None = None
+    location_selections: tuple[LocationSelection, ...] = ()
     excluded_keywords: tuple[str, ...] = ()
     excluded_companies: tuple[str, ...] = ()
     remote_only: bool = False
@@ -45,10 +50,18 @@ class SearchFilters:
             if not 0 < radius <= 500:
                 raise ValueError("location_radius_km must be between 0 and 500")
             object.__setattr__(self, "location_radius_km", radius)
+        selections = tuple(self.location_selections)
+        if any(not isinstance(item, LocationSelection) for item in selections):
+            raise ValueError("location_selections must contain locations")
+        object.__setattr__(self, "location_selections", selections)
 
     @property
     def location_queries(self) -> tuple[LocationQuery, ...]:
-        return build_location_queries(self.locations, self.location_radius_km)
+        return build_location_queries(
+            self.locations,
+            self.location_radius_km,
+            self.location_selections,
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -62,6 +75,7 @@ def search_jobs(
     jobs: list[JobPosting],
     filters: SearchFilters,
     matcher: JobMatcher | None = None,
+    location_prefiltered_job_ids: frozenset[str] = frozenset(),
 ) -> list[RankedJob]:
     scorer = matcher or JobMatcher()
     source_keys = {value.casefold() for value in filters.sources}
@@ -77,7 +91,11 @@ def search_jobs(
             continue
         if filters.remote_only and not job.is_remote:
             continue
-        if location_keys and not job.is_remote:
+        if (
+            location_keys
+            and job.job_id not in location_prefiltered_job_ids
+            and not job.is_remote
+        ):
             location = job.location.casefold()
             if not any(value in location for value in location_keys):
                 continue

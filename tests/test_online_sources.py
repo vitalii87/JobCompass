@@ -3,6 +3,7 @@ from __future__ import annotations
 import unittest
 from typing import Any
 
+from app.core.location import LocationSelection
 from app.sources import ArbeitnowSource, BundesagenturSource, RemotiveSource, SearchQuery
 
 
@@ -154,6 +155,56 @@ class OnlineSourceTests(unittest.TestCase):
 
         self.assertEqual(len(jobs), 1)
         self.assertEqual(jobs[0].title, "Kaufmännische Assistenz (m/w/d)")
+
+    def test_bundesagentur_keeps_nearby_city_returned_by_server_radius(self) -> None:
+        search_response = {
+            "stellenangebote": [
+                {
+                    "titel": "Office Manager (m/w/d)",
+                    "refnr": "RADIUS-1",
+                    "arbeitsort": {
+                        "ort": "Stuttgart",
+                        "region": "Baden-Württemberg",
+                    },
+                    "arbeitgeber": "Nearby GmbH",
+                }
+            ],
+            "maxErgebnisse": 1,
+        }
+        detail_response = {
+            "stellenangebotsTitel": "Office Manager (m/w/d)",
+            "stellenangebotsBeschreibung": "Office Management und MS Office.",
+            "firma": "Nearby GmbH",
+        }
+        client = FakeClient(
+            {"jobdetails": detail_response, "/jobs": search_response}
+        )
+        location = LocationSelection(
+            name="Köngen",
+            geonames_id=2890248,
+            admin1="Baden-Württemberg",
+            admin3="Landkreis Esslingen",
+            country="Deutschland",
+            country_code="DE",
+            latitude=48.68333,
+            longitude=9.36667,
+        )
+
+        jobs = BundesagenturSource(
+            client=client, max_results=10, detail_workers=1
+        ).search(
+            SearchQuery(
+                roles=("Office Manager",),
+                locations=("Köngen",),
+                location_selections=(location,),
+                location_radius_km=50,
+            )
+        )
+
+        self.assertEqual([job.location for job in jobs], ["Stuttgart, Baden-Württemberg"])
+        search_call = next(call for call in client.calls if call[0].endswith("/jobs"))
+        self.assertEqual(search_call[1]["wo"], "Köngen, Baden-Württemberg")
+        self.assertEqual(search_call[1]["umkreis"], 50)
 
     def test_remotive_keeps_germany_compatible_remote_job(self) -> None:
         client = FakeClient(

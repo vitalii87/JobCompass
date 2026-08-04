@@ -21,6 +21,9 @@ class BundesagenturSource:
     search_endpoint = (
         "https://rest.arbeitsagentur.de/jobboerse/jobsuche-service/pc/v4/jobs"
     )
+    fallback_search_endpoint = (
+        "https://rest.arbeitsagentur.de/jobboerse/jobsuche-service/pc/v4/app/jobs"
+    )
     detail_endpoint = (
         "https://rest.arbeitsagentur.de/jobboerse/jobsuche-service/pc/v4/jobdetails"
     )
@@ -38,13 +41,16 @@ class BundesagenturSource:
 
     def search(self, query: SearchQuery) -> list[JobPosting]:
         roles = query.roles or query.keywords or ("",)
-        locations = tuple(item.name for item in query.location_queries) or ("",)
+        locations = query.location_queries or (None,)
         combination_count = max(1, len(roles) * len(locations))
         page_size = min(25, max(5, self.max_results // combination_count + 3))
         rows_by_reference: dict[str, dict[str, Any]] = {}
 
         for role in roles:
-            for location in locations:
+            for location_query in locations:
+                location = (
+                    location_query.source_query if location_query is not None else ""
+                )
                 params: dict[str, object] = {
                     "angebotsart": 1,
                     "page": 1,
@@ -59,9 +65,14 @@ class BundesagenturSource:
                     ),
                     "arbeitszeit": "ho" if query.remote_only else None,
                 }
-                payload = self.client.get_json(
-                    self.search_endpoint, params, self.headers
-                )
+                payload = self._get_search_payload(params)
+                if (
+                    payload.get("maxErgebnisse") == 0
+                    and location_query is not None
+                    and location_query.source_query != location_query.name
+                ):
+                    params["wo"] = location_query.name
+                    payload = self._get_search_payload(params)
                 rows = payload.get("stellenangebote")
                 if rows is None and payload.get("maxErgebnisse") == 0:
                     continue
@@ -89,9 +100,25 @@ class BundesagenturSource:
         jobs: list[JobPosting] = []
         for row, detail in zip(rows, details, strict=True):
             job = self._normalize(row, detail)
-            if job is not None and matches_query(job, query):
+            if job is not None and matches_query(
+                job, query, location_prefiltered=True
+            ):
                 jobs.append(job)
         return jobs
+
+    def _get_search_payload(self, params: dict[str, object]) -> dict[str, Any]:
+        errors: list[SourceError] = []
+        for endpoint in (self.search_endpoint, self.fallback_search_endpoint):
+            try:
+                return self.client.get_json(endpoint, params, self.headers)
+            except SourceError as error:
+                errors.append(error)
+                if "HTTP 404" not in str(error):
+                    raise
+        raise SourceError(
+            "Jobsuche Bundesagentur тимчасово недоступна: обидва пошукові "
+            "endpoint-и повернули HTTP 404"
+        ) from errors[-1]
 
     def _load_detail_safely(self, row: dict[str, Any]) -> dict[str, Any]:
         reference = text_value(row.get("refnr"))

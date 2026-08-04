@@ -39,7 +39,7 @@ class RemotiveSource:
 
     @staticmethod
     def _location_is_compatible(location: str, query: SearchQuery) -> bool:
-        if not query.locations:
+        if not query.location_queries:
             return True
         normalized = location.casefold()
         broad_regions = ("worldwide", "anywhere", "europe", "emea", "germany")

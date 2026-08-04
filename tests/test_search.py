@@ -89,6 +89,30 @@ class SearchTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "between 0 and 500"):
             SearchFilters(locations=("Berlin",), location_radius_km=700)
 
+    def test_server_radius_results_are_not_filtered_again_by_city_name(self) -> None:
+        nearby_job = JobPosting(
+            source="online",
+            external_id="nearby",
+            title="Python Developer",
+            company="Nearby GmbH",
+            location="Stuttgart",
+            required_skills=("Python",),
+        )
+        filters = SearchFilters(locations=("Köngen",), location_radius_km=50)
+
+        without_server_context = search_jobs(self.profile, [nearby_job], filters)
+        with_server_context = search_jobs(
+            self.profile,
+            [nearby_job],
+            filters,
+            location_prefiltered_job_ids=frozenset({nearby_job.job_id}),
+        )
+
+        self.assertEqual(without_server_context, [])
+        self.assertEqual(
+            [item.job.job_id for item in with_server_context], [nearby_job.job_id]
+        )
+
     def test_without_remote_only_all_work_modes_are_included(self) -> None:
         jobs = [
             JobPosting(

@@ -11,6 +11,7 @@ from tkinter import (
     BooleanVar,
     DoubleVar,
     END,
+    Listbox,
     Menu,
     StringVar,
     Text,
@@ -28,12 +29,14 @@ from app.core.models import (
     CoverLetterPreparation,
     JobPosting,
 )
+from app.core.location import LocationSelection
 from app.core.paths import default_data_path
 from app.core.search import RankedJob, SearchFilters, search_jobs
 from app.services import (
     build_ai_prompt,
     build_cover_letter_draft,
     build_evidence_summary,
+    LocationGeocoder,
     load_resume,
     suggested_letter_language,
 )
@@ -70,6 +73,13 @@ _LETTER_LENGTHS = {
     "Розгорнутий (250–320 слів)": "detailed",
 }
 
+_LOCATION_COUNTRIES = {
+    "Deutschland (DE)": "DE",
+    "Österreich (AT)": "AT",
+    "Schweiz (CH)": "CH",
+    "Усі країни": "",
+}
+
 
 def _split_list(value: str) -> tuple[str, ...]:
     normalized = value.replace("\n", ",").replace(";", ",")
@@ -89,6 +99,13 @@ class JobCompassApp:
             source_type.name: source_type() for source_type in ONLINE_SOURCE_TYPES
         }
         self.search_queue: Queue[object] = Queue()
+        self.location_lookup_queue: Queue[object] = Queue()
+        self.location_geocoder = LocationGeocoder()
+        self.selected_locations: list[LocationSelection] = []
+        self.location_suggestions: dict[str, LocationSelection] = {}
+        self.location_lookup_after_id: str | None = None
+        self.location_lookup_generation = 0
+        self.location_lookup_polling = False
         self.search_running = False
         self.empty_results_message = (
             "Немає вакансій, що відповідають вибраним фільтрам."
@@ -386,7 +403,10 @@ class JobCompassApp:
             (
                 "Локації (міста) *",
                 self.location_var,
-                "Обов’язково. Напр.: Köngen, Stuttgart. Через кому; міста працюють як АБО / OR.",
+                (
+                    "Обов’язково. Введіть назву, оберіть точне місто з підказки; "
+                    "можна додати кілька міст, вони працюють як АБО / OR."
+                ),
             ),
             ("Виключити слова", self.excluded_keyword_var, "Через кому."),
             ("Виключити компанії", self.excluded_company_var, "Через кому."),
@@ -396,13 +416,78 @@ class JobCompassApp:
             field = ttk.Frame(filters)
             field.grid(row=row, column=1, sticky="ew", padx=(12, 0), pady=5)
             field.columnconfigure(0, weight=1)
-            ttk.Entry(field, textvariable=variable).grid(row=0, column=0, sticky="ew")
+            if variable is self.location_var:
+                self.location_entry = ttk.Combobox(
+                    field,
+                    textvariable=variable,
+                    state="normal",
+                )
+                self.location_entry.grid(row=0, column=0, sticky="ew")
+                self.location_entry.bind(
+                    "<KeyRelease>", self._schedule_location_lookup
+                )
+                self.location_entry.bind(
+                    "<<ComboboxSelected>>", self._select_location_suggestion
+                )
+            else:
+                ttk.Entry(field, textvariable=variable).grid(
+                    row=0, column=0, sticky="ew"
+                )
             ttk.Label(field, text=hint, foreground="#555555", wraplength=680).grid(
                 row=1, column=0, sticky="w", pady=(2, 0)
             )
             if variable is self.location_var:
+                location_controls = ttk.Frame(field)
+                location_controls.grid(row=2, column=0, sticky="ew", pady=(6, 0))
+                location_controls.columnconfigure(4, weight=1)
+                ttk.Label(location_controls, text="Країна підказок").grid(
+                    row=0, column=0, sticky="w"
+                )
+                self.location_country_var = StringVar(value="Deutschland (DE)")
+                country_box = ttk.Combobox(
+                    location_controls,
+                    textvariable=self.location_country_var,
+                    values=tuple(_LOCATION_COUNTRIES),
+                    state="readonly",
+                    width=19,
+                )
+                country_box.grid(row=0, column=1, sticky="w", padx=(6, 12))
+                country_box.bind(
+                    "<<ComboboxSelected>>", self._schedule_location_lookup
+                )
+                ttk.Button(
+                    location_controls,
+                    text="Додати введене без перевірки",
+                    command=self._add_manual_locations,
+                ).grid(row=0, column=2, sticky="w")
+                ttk.Button(
+                    location_controls,
+                    text="Видалити вибране",
+                    command=self._remove_selected_location,
+                ).grid(row=0, column=3, sticky="w", padx=(6, 0))
+
+                ttk.Label(field, text="Вибрані міста:").grid(
+                    row=3, column=0, sticky="w", pady=(6, 2)
+                )
+                self.selected_locations_list = Listbox(
+                    field,
+                    height=3,
+                    exportselection=False,
+                    font=("Segoe UI", 9),
+                )
+                self.selected_locations_list.grid(row=4, column=0, sticky="ew")
+                self.location_lookup_status_var = StringVar(
+                    value="Почніть вводити щонайменше 2–3 літери й оберіть місто зі списку."
+                )
+                ttk.Label(
+                    field,
+                    textvariable=self.location_lookup_status_var,
+                    foreground="#555555",
+                    wraplength=680,
+                ).grid(row=5, column=0, sticky="w", pady=(2, 0))
+
                 radius_frame = ttk.Frame(field)
-                radius_frame.grid(row=2, column=0, sticky="ew", pady=(6, 0))
+                radius_frame.grid(row=6, column=0, sticky="ew", pady=(6, 0))
                 radius_frame.columnconfigure(1, weight=1)
                 ttk.Label(radius_frame, text="Радіус").grid(row=0, column=0, sticky="w")
                 ttk.Scale(
@@ -419,8 +504,9 @@ class JobCompassApp:
                 ttk.Label(
                     radius_frame,
                     text=(
-                        "Точний радіус застосує онлайн-конектор; локальний JSON "
-                        "фільтрується лише за назвою міста."
+                        "Один радіус застосовується окремо до кожного вибраного "
+                        "міста. Bundesagentur передає його серверу; джерела без "
+                        "геопошуку можуть фільтрувати лише за назвою."
                     ),
                     foreground="#555555",
                     wraplength=620,
@@ -639,7 +725,10 @@ class JobCompassApp:
         ttk.Label(
             connectors,
             text=(
-                "Онлайн: Bundesagentur für Arbeit, Arbeitnow і Remotive — доступно.\n"
+                "Вакансії: Bundesagentur, Arbeitnow і Remotive підключені; доступність "
+                "залежить від зовнішніх сервісів.\n"
+                "Підказки міст: Open-Meteo Geocoding / GeoNames, без ключа для "
+                "некомерційного використання; вводиться лише текст міста.\n"
                 "JSON-імпорт залишається допоміжним режимом для тестів і власних даних.\n"
                 "Резюме: JSON, TXT, DOCX і текстовий PDF — доступно локально.\n"
                 "СЛ, безкоштовний режим: локальна чернетка та покращений промпт — доступно.\n"
@@ -792,11 +881,12 @@ class JobCompassApp:
                 raise ValueError("Оберіть хоча б одне джерело вакансій")
             roles = _split_list(self.role_var.get()) or profile.desired_roles
             keywords = _split_list(self.keyword_var.get())
-            locations = _split_list(self.location_var.get())
-            if not locations:
+            location_selections = tuple(self.selected_locations)
+            locations = tuple(item.name for item in location_selections)
+            if not location_selections:
                 raise ValueError(
-                    "Вкажіть хоча б одну локацію в полі «Локації (міста) *». "
-                    "Наприклад: Köngen, Stuttgart."
+                    "Оберіть хоча б одне місто з підказки або натисніть "
+                    "«Додати введене без перевірки»."
                 )
             if roles and profile.desired_roles != roles:
                 profile = replace(profile, desired_roles=roles)
@@ -814,6 +904,7 @@ class JobCompassApp:
                 roles=roles,
                 keywords=keywords,
                 locations=locations,
+                location_selections=location_selections,
                 location_radius_km=(
                     round(self.location_radius_var.get())
                     if self.location_radius_var.get() >= 1
@@ -831,6 +922,7 @@ class JobCompassApp:
         query = SearchQuery(
             roles=filters.roles,
             locations=filters.locations,
+            location_selections=filters.location_selections,
             location_radius_km=filters.location_radius_km,
             keywords=filters.keywords,
             remote_only=filters.remote_only,
@@ -910,6 +1002,9 @@ class JobCompassApp:
                     ),
                 ]
             )
+            location_prefiltered_job_ids = frozenset(
+                job.job_id for job in online_jobs
+            )
             broadly_matching = search_jobs(
                 profile,
                 current_search_jobs,
@@ -920,11 +1015,20 @@ class JobCompassApp:
                     excluded_companies=(),
                     minimum_score=0,
                 ),
+                location_prefiltered_job_ids=location_prefiltered_job_ids,
             )
             matching_before_score = search_jobs(
-                profile, current_search_jobs, replace(filters, minimum_score=0)
+                profile,
+                current_search_jobs,
+                replace(filters, minimum_score=0),
+                location_prefiltered_job_ids=location_prefiltered_job_ids,
             )
-            self.ranked_jobs = search_jobs(profile, current_search_jobs, filters)
+            self.ranked_jobs = search_jobs(
+                profile,
+                current_search_jobs,
+                filters,
+                location_prefiltered_job_ids=location_prefiltered_job_ids,
+            )
             if self.ranked_jobs:
                 self.empty_results_message = ""
             elif broadly_matching and not matching_before_score:
@@ -1099,11 +1203,195 @@ class JobCompassApp:
             return
         ApplicationPreparationDialog(self, ranked)
 
+    def _schedule_location_lookup(self, event: object | None = None) -> None:
+        keysym = getattr(event, "keysym", "")
+        if keysym in {
+            "Up",
+            "Down",
+            "Left",
+            "Right",
+            "Return",
+            "Escape",
+            "Tab",
+        }:
+            return
+        if self.location_lookup_after_id is not None:
+            try:
+                self.root.after_cancel(self.location_lookup_after_id)
+            except Exception:
+                pass
+            self.location_lookup_after_id = None
+        query = self.location_var.get().strip()
+        if len(query) < 2:
+            self.location_suggestions = {}
+            self.location_entry.configure(values=())
+            self.location_lookup_status_var.set(
+                "Введіть щонайменше 2–3 літери назви міста."
+            )
+            return
+        self.location_lookup_status_var.set("Шукаю відповідні міста…")
+        self.location_lookup_after_id = self.root.after(
+            350, lambda: self._start_location_lookup(query)
+        )
+
+    def _start_location_lookup(self, query: str) -> None:
+        self.location_lookup_after_id = None
+        self.location_lookup_generation += 1
+        generation = self.location_lookup_generation
+        country_code = _LOCATION_COUNTRIES.get(
+            self.location_country_var.get(), "DE"
+        )
+
+        def worker() -> None:
+            try:
+                suggestions = self.location_geocoder.search(
+                    query,
+                    country_code=country_code,
+                    language="de",
+                    count=10,
+                )
+                error = ""
+            except Exception as lookup_error:
+                suggestions = []
+                error = str(lookup_error)
+            self.location_lookup_queue.put(
+                (generation, query, suggestions, error)
+            )
+
+        Thread(target=worker, daemon=True).start()
+        if not self.location_lookup_polling:
+            self.location_lookup_polling = True
+            self.root.after(75, self._poll_location_lookup)
+
+    def _poll_location_lookup(self) -> None:
+        latest: tuple[int, str, list[LocationSelection], str] | None = None
+        try:
+            while True:
+                payload = self.location_lookup_queue.get_nowait()
+                if (
+                    isinstance(payload, tuple)
+                    and len(payload) == 4
+                    and payload[0] == self.location_lookup_generation
+                ):
+                    latest = payload
+        except Empty:
+            pass
+        if latest is None:
+            self.root.after(75, self._poll_location_lookup)
+            return
+        self.location_lookup_polling = False
+        _, query, suggestions, error = latest
+        if query.casefold() != self.location_var.get().strip().casefold():
+            return
+        if error:
+            self.location_suggestions = {}
+            self.location_entry.configure(values=())
+            self.location_lookup_status_var.set(
+                "Підказки міст тимчасово недоступні. Місто можна додати вручну."
+            )
+            return
+
+        suggestion_map: dict[str, LocationSelection] = {}
+        for suggestion in suggestions:
+            label = suggestion.display_name
+            if label in suggestion_map:
+                assert suggestion.latitude is not None
+                assert suggestion.longitude is not None
+                label += f" ({suggestion.latitude:.4f}, {suggestion.longitude:.4f})"
+            suggestion_map[label] = suggestion
+        self.location_suggestions = suggestion_map
+        labels = tuple(suggestion_map)
+        self.location_entry.configure(values=labels)
+        if labels:
+            self.location_lookup_status_var.set(
+                f"Знайдено варіантів: {len(labels)}. Оберіть точне місто зі списку."
+            )
+            if self.location_entry.focus_get() is self.location_entry:
+                try:
+                    self.location_entry.event_generate("<Down>")
+                except Exception:
+                    pass
+        else:
+            self.location_lookup_status_var.set(
+                "Місто не знайдено. Перевірте написання або додайте введене вручну."
+            )
+
+    def _select_location_suggestion(self, _event: object | None = None) -> None:
+        label = self.location_var.get().strip()
+        suggestion = self.location_suggestions.get(label)
+        if suggestion is None:
+            return
+        self._add_location_selection(suggestion)
+        self.location_var.set("")
+        self.location_suggestions = {}
+        self.location_entry.configure(values=())
+
+    @staticmethod
+    def _location_selection_key(selection: LocationSelection) -> object:
+        if selection.geonames_id is not None:
+            return ("geonames", selection.geonames_id)
+        return (
+            selection.name.casefold(),
+            selection.admin1.casefold(),
+            selection.country_code.casefold(),
+        )
+
+    def _add_location_selection(self, selection: LocationSelection) -> None:
+        key = self._location_selection_key(selection)
+        if any(
+            self._location_selection_key(existing) == key
+            for existing in self.selected_locations
+        ):
+            self.location_lookup_status_var.set(
+                f"Місто вже вибрано: {selection.display_name}"
+            )
+            return
+        self.selected_locations.append(selection)
+        self._refresh_selected_locations()
+        self.location_lookup_status_var.set(
+            f"Додано: {selection.display_name}"
+        )
+
+    def _add_manual_locations(self) -> None:
+        names = _split_list(self.location_var.get())
+        if not names:
+            self.location_lookup_status_var.set("Спочатку введіть назву міста.")
+            return
+        for name in names:
+            self._add_location_selection(LocationSelection(name=name))
+        self.location_var.set("")
+        self.location_suggestions = {}
+        self.location_entry.configure(values=())
+        self.location_lookup_status_var.set(
+            "Місто додано без географічної перевірки; за можливості оберіть підказку."
+        )
+
+    def _remove_selected_location(self) -> None:
+        selection = self.selected_locations_list.curselection()
+        if not selection:
+            self.location_lookup_status_var.set(
+                "Виберіть місто у списку, яке потрібно видалити."
+            )
+            return
+        del self.selected_locations[selection[0]]
+        self._refresh_selected_locations()
+
+    def _refresh_selected_locations(self) -> None:
+        self.selected_locations_list.delete(0, END)
+        radius = round(self.location_radius_var.get())
+        radius_label = "без радіуса" if radius < 1 else f"+{radius} km"
+        for selection in self.selected_locations:
+            self.selected_locations_list.insert(
+                END, f"{selection.display_name}  ·  {radius_label}"
+            )
+
     def _update_radius_label(self, value: str) -> None:
         radius = round(float(value))
         self.location_radius_label.configure(
             text="Без радіуса" if radius < 1 else f"+{radius} km"
         )
+        if hasattr(self, "selected_locations_list"):
+            self._refresh_selected_locations()
 
     def _mark_selected_result(self, status: ApplicationStatus) -> None:
         ranked = self._selected_result()
