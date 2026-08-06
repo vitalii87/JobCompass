@@ -5,9 +5,11 @@ import unittest
 from app.core.models import (
     ApplicationEvent,
     ApplicationRecord,
+    ApplicationSubmission,
     ApplicationStatus,
     CandidateProfile,
     JobPosting,
+    SubmissionMode,
     WorkMode,
 )
 
@@ -87,6 +89,23 @@ class ApplicationRecordTests(unittest.TestCase):
             ApplicationRecord.from_dict(record.to_dict()).history[0].status,
             ApplicationStatus.APPLIED,
         )
+
+    def test_structured_submission_survives_round_trip(self) -> None:
+        submission = ApplicationSubmission(
+            mode=SubmissionMode.ASSISTED,
+            destination_url="https://example.test/job/1",
+            resume_path="C:/Documents/resume.pdf",
+            resume_name="resume.pdf",
+            resume_sha256="a" * 64,
+            cover_letter_text="Sehr geehrte Damen und Herren,",
+            contact_email="candidate@example.test",
+        )
+        record = ApplicationRecord(job_id="source:1", submissions=(submission,))
+
+        restored = ApplicationRecord.from_dict(record.to_dict())
+
+        self.assertEqual(restored.submissions, (submission,))
+        self.assertTrue(restored.has_submission_history)
 
 if __name__ == "__main__":
     unittest.main()

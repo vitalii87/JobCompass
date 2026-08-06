@@ -94,6 +94,12 @@ class ApplicationStatus(StrEnum):
     ARCHIVED = "Archived"
 
 
+class SubmissionMode(StrEnum):
+    MANUAL = "manual"
+    ASSISTED = "assisted"
+    AUTOMATIC = "automatic"
+
+
 class MatchLevel(StrEnum):
     FULL = "full"
     PARTIAL = "partial"
@@ -487,6 +493,82 @@ class ApplicationEvent:
 
 
 @dataclass(frozen=True, slots=True)
+class ApplicationSubmission:
+    """A local audit record of materials the user confirmed as submitted."""
+
+    mode: SubmissionMode
+    destination_url: str = ""
+    resume_path: str = ""
+    resume_name: str = ""
+    resume_sha256: str = ""
+    cover_letter_text: str = ""
+    contact_full_name: str = ""
+    contact_email: str = ""
+    contact_phone: str = ""
+    submitted_at: datetime = field(default_factory=utc_now)
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.mode, SubmissionMode):
+            object.__setattr__(self, "mode", SubmissionMode(self.mode))
+        for field_name in (
+            "destination_url",
+            "resume_path",
+            "resume_name",
+            "resume_sha256",
+            "cover_letter_text",
+            "contact_full_name",
+            "contact_email",
+            "contact_phone",
+        ):
+            object.__setattr__(
+                self, field_name, _text(getattr(self, field_name), field_name)
+            )
+        if self.resume_sha256 and (
+            len(self.resume_sha256) != 64
+            or any(character not in "0123456789abcdef" for character in self.resume_sha256)
+        ):
+            raise ValueError("resume_sha256 must be a lowercase SHA-256 digest")
+        if self.submitted_at.tzinfo is None:
+            object.__setattr__(
+                self, "submitted_at", self.submitted_at.replace(tzinfo=timezone.utc)
+            )
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> ApplicationSubmission:
+        return cls(
+            mode=SubmissionMode(_text(data.get("mode"), "mode")),
+            destination_url=_text(data.get("destination_url"), "destination_url"),
+            resume_path=_text(data.get("resume_path"), "resume_path"),
+            resume_name=_text(data.get("resume_name"), "resume_name"),
+            resume_sha256=_text(data.get("resume_sha256"), "resume_sha256"),
+            cover_letter_text=_text(
+                data.get("cover_letter_text"), "cover_letter_text"
+            ),
+            contact_full_name=_text(
+                data.get("contact_full_name"), "contact_full_name"
+            ),
+            contact_email=_text(data.get("contact_email"), "contact_email"),
+            contact_phone=_text(data.get("contact_phone"), "contact_phone"),
+            submitted_at=_parse_datetime(data.get("submitted_at"), "submitted_at")
+            or utc_now(),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "mode": self.mode.value,
+            "destination_url": self.destination_url,
+            "resume_path": self.resume_path,
+            "resume_name": self.resume_name,
+            "resume_sha256": self.resume_sha256,
+            "cover_letter_text": self.cover_letter_text,
+            "contact_full_name": self.contact_full_name,
+            "contact_email": self.contact_email,
+            "contact_phone": self.contact_phone,
+            "submitted_at": self.submitted_at.isoformat(),
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class ApplicationRecord:
     job_id: str
     status: ApplicationStatus = ApplicationStatus.FOUND
@@ -494,6 +576,7 @@ class ApplicationRecord:
     created_at: datetime = field(default_factory=utc_now)
     updated_at: datetime = field(default_factory=utc_now)
     history: tuple[ApplicationEvent, ...] = ()
+    submissions: tuple[ApplicationSubmission, ...] = ()
 
     def __post_init__(self) -> None:
         if not self.job_id.strip():
@@ -508,6 +591,13 @@ class ApplicationRecord:
         if any(not isinstance(event, ApplicationEvent) for event in history):
             raise ValueError("history must contain application events")
         object.__setattr__(self, "history", history)
+        submissions = tuple(self.submissions)
+        if any(
+            not isinstance(submission, ApplicationSubmission)
+            for submission in submissions
+        ):
+            raise ValueError("submissions must contain application submissions")
+        object.__setattr__(self, "submissions", submissions)
 
     @property
     def has_submission_history(self) -> bool:
@@ -517,7 +607,7 @@ class ApplicationRecord:
             ApplicationStatus.INTERVIEW,
             ApplicationStatus.OFFER,
         }
-        return self.status in submitted_statuses or any(
+        return bool(self.submissions) or self.status in submitted_statuses or any(
             event.status in submitted_statuses for event in self.history
         )
 
@@ -534,6 +624,17 @@ class ApplicationRecord:
             history = tuple(ApplicationEvent.from_dict(item) for item in raw_history)
         else:
             raise ValueError("history must be a list of application events")
+        raw_submissions = data.get("submissions")
+        if raw_submissions is None:
+            submissions: tuple[ApplicationSubmission, ...] = ()
+        elif isinstance(raw_submissions, list) and all(
+            isinstance(item, dict) for item in raw_submissions
+        ):
+            submissions = tuple(
+                ApplicationSubmission.from_dict(item) for item in raw_submissions
+            )
+        else:
+            raise ValueError("submissions must be a list")
         return cls(
             job_id=_text(data.get("job_id"), "job_id"),
             status=ApplicationStatus(
@@ -543,6 +644,7 @@ class ApplicationRecord:
             created_at=created_at or utc_now(),
             updated_at=updated_at or created_at or utc_now(),
             history=history,
+            submissions=submissions,
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -553,4 +655,5 @@ class ApplicationRecord:
             "created_at": self.created_at.isoformat(),
             "updated_at": self.updated_at.isoformat(),
             "history": [event.to_dict() for event in self.history],
+            "submissions": [submission.to_dict() for submission in self.submissions],
         }

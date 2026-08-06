@@ -3,7 +3,7 @@ Unicode True
 !include "MUI2.nsh"
 
 !ifndef APP_VERSION
-  !define APP_VERSION "0.9.0"
+  !define APP_VERSION "0.10.0"
 !endif
 
 !define APP_NAME "JobCompass"
@@ -50,6 +50,7 @@ Section "JobCompass" MainSection
   SetOutPath "$INSTDIR"
   File /r "${PROJECT_ROOT}\dist\JobCompass\*"
   File /oname=README.md "${PROJECT_ROOT}\README.md"
+  File /oname=README.en.md "${PROJECT_ROOT}\README.en.md"
 
   WriteUninstaller "$INSTDIR\Uninstall.exe"
   CreateDirectory "$SMPROGRAMS\JobCompass"

@@ -132,6 +132,7 @@ New-Item -ItemType Directory -Path $portableRoot | Out-Null
 Copy-Item -Path (Join-Path $applicationDirectory "*") -Destination $portableRoot -Recurse
 New-Item -ItemType File -Path (Join-Path $portableRoot "portable.flag") | Out-Null
 Copy-Item -LiteralPath (Join-Path $projectRoot "README.md") -Destination $portableRoot
+Copy-Item -LiteralPath (Join-Path $projectRoot "README.en.md") -Destination $portableRoot
 $portableArchive = Join-Path $releaseDirectory "JobCompass-$appVersion-Portable.zip"
 Compress-Archive -Path (Join-Path $portableRoot "*") -DestinationPath $portableArchive -CompressionLevel Optimal
 
@@ -165,7 +166,12 @@ if (-not $SkipInstaller) {
 Remove-Item -LiteralPath (Join-Path $projectRoot ".portable-staging") -Recurse -Force
 
 $artifacts = Get-ChildItem -LiteralPath $releaseDirectory -File |
-    Where-Object { $_.Name -ne "SHA256SUMS.txt" } |
+    Where-Object {
+        $_.Name -in @(
+            "JobCompass-$appVersion-Portable.zip",
+            "JobCompass-$appVersion-Setup.exe"
+        )
+    } |
     Sort-Object Name
 $checksumLines = foreach ($artifact in $artifacts) {
     $hash = (Get-FileHash -LiteralPath $artifact.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
