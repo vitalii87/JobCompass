@@ -18,6 +18,7 @@ class LocalJsonStoreTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "jobcompass.json"
             store = LocalJsonStore(path)
+            store.create_profile("Vitalii")
             job = JobPosting(
                 source="test",
                 external_id="1",
@@ -72,6 +73,7 @@ class LocalJsonStoreTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "jobcompass.json"
             store = LocalJsonStore(path)
+            store.create_profile("Vitalii")
             job = JobPosting(
                 source="test", external_id="letter", title="PMO", company="ACME"
             )

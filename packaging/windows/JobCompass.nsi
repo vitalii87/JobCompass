@@ -3,7 +3,7 @@ Unicode True
 !include "MUI2.nsh"
 
 !ifndef APP_VERSION
-  !define APP_VERSION "0.8.3"
+  !define APP_VERSION "0.9.0"
 !endif
 
 !define APP_NAME "JobCompass"
@@ -70,6 +70,7 @@ SectionEnd
 
 Section "Uninstall"
   SetShellVarContext current
+  nsExec::ExecToLog '"$INSTDIR\${APP_EXE}" --data "$LOCALAPPDATA\JobCompass\data\jobcompass.json" remove-scheduled-tasks'
   Delete "$DESKTOP\JobCompass.lnk"
   Delete "$SMPROGRAMS\JobCompass\JobCompass.lnk"
   Delete "$SMPROGRAMS\JobCompass\Видалити JobCompass.lnk"

@@ -11,6 +11,7 @@ from app.core.models import (
     RequirementEvidence,
     WorkMode,
 )
+from app.core.profiles import ProfileSummary, SavedSearchPreferences, SearchSchedule
 
 __all__ = [
     "ApplicationRecord",
@@ -22,4 +23,7 @@ __all__ = [
     "MatchResult",
     "RequirementEvidence",
     "WorkMode",
+    "ProfileSummary",
+    "SavedSearchPreferences",
+    "SearchSchedule",
 ]

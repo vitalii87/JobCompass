@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import os
+import subprocess
+import tempfile
 import webbrowser
 from dataclasses import replace
 from datetime import datetime, timezone
@@ -21,6 +24,7 @@ from tkinter import (
     Toplevel,
     filedialog,
     messagebox,
+    simpledialog,
 )
 from tkinter import ttk
 
@@ -33,6 +37,7 @@ from app.core.models import (
 )
 from app.core.location import LocationSelection
 from app.core.paths import default_data_path
+from app.core.profiles import SavedSearchPreferences, SearchSchedule
 from app.core.search import RankedJob, SearchFilters, search_jobs
 from app.services import (
     build_ai_prompt,
@@ -40,8 +45,16 @@ from app.services import (
     build_evidence_summary,
     LocationGeocoder,
     load_resume,
+    sync_windows_search_task,
     suggested_letter_language,
+    ReleaseInfo,
+    UpdateError,
+    check_latest_release,
+    download_release_asset,
+    is_newer_version,
+    runtime_mode,
 )
+from app import __version__
 from app.sources import JsonFileSource, ONLINE_SOURCE_TYPES, SearchQuery
 from app.storage import LocalJsonStore
 
@@ -99,6 +112,11 @@ class JobCompassApp:
         self.root = root
         self.store = LocalJsonStore(data_path)
         self.store.initialize()
+        self.previous_profile_opened_at = (
+            self.store.activate_profile(self.store.active_profile_id)
+            if self.store.active_profile_id is not None
+            else None
+        )
         self.profile = self.store.load_profile() or CandidateProfile()
         self.ranked_jobs: list[RankedJob] = []
         self.result_by_id: dict[str, RankedJob] = {}
@@ -108,6 +126,15 @@ class JobCompassApp:
         }
         self.search_queue: Queue[object] = Queue()
         self.location_lookup_queue: Queue[object] = Queue()
+        self.update_queue: Queue[object] = Queue()
+        self.update_download_queue: Queue[object] = Queue()
+        self.latest_release: ReleaseInfo | None = None
+        self.update_window: Toplevel | None = None
+        self.update_status_var: StringVar | None = None
+        self.update_notes_var: StringVar | None = None
+        self.update_button: ttk.Button | None = None
+        self.update_check_running = False
+        self.update_download_running = False
         self.location_geocoder = LocationGeocoder()
         self.selected_locations: list[LocationSelection] = []
         self.location_suggestions: dict[str, LocationSelection] = {}
@@ -115,6 +142,10 @@ class JobCompassApp:
         self.location_lookup_generation = 0
         self.location_lookup_polling = False
         self.search_running = False
+        self.scheduled_search_running = False
+        self.profile_display_to_id: dict[str, str | None] = {}
+        self.current_resume_path = ""
+        self.current_resume_text = ""
         self.last_search_profile: CandidateProfile | None = None
         self.last_search_filters: SearchFilters | None = None
         self.last_search_jobs: list[JobPosting] = []
@@ -136,7 +167,41 @@ class JobCompassApp:
 
         container = ttk.Frame(root, padding=12)
         container.pack(fill="both", expand=True)
-        ttk.Label(container, text="JobCompass", style="Title.TLabel").pack(anchor="w")
+        identity_bar = ttk.Frame(container)
+        identity_bar.pack(fill="x")
+        ttk.Label(identity_bar, text="JobCompass", style="Title.TLabel").pack(
+            side="left"
+        )
+        self.settings_button = ttk.Button(
+            identity_bar,
+            text="⚙",
+            width=3,
+            command=self._show_settings_dialog,
+            takefocus=True,
+        )
+        self.settings_button.pack(side="right", padx=(8, 0))
+        self.profile_selector_var = StringVar()
+        self.profile_selector = ttk.Combobox(
+            identity_bar,
+            textvariable=self.profile_selector_var,
+            state="readonly",
+            width=28,
+        )
+        self.profile_selector.pack(side="right")
+        self.profile_selector.bind("<<ComboboxSelected>>", self._switch_profile)
+        ttk.Label(identity_bar, text="Активний профіль:").pack(
+            side="right", padx=(12, 6)
+        )
+        ttk.Button(
+            identity_bar,
+            text="Новий профіль",
+            command=self._create_profile,
+        ).pack(side="right")
+        ttk.Button(
+            identity_bar,
+            text="Редагувати",
+            command=lambda: self.notebook.select(self.profile_tab),
+        ).pack(side="right", padx=(0, 6))
         ttk.Label(
             container,
             text="Локальний пошук, оцінювання та відстеження вакансій",
@@ -147,11 +212,13 @@ class JobCompassApp:
         self.notebook.pack(fill="both", expand=True)
         self.profile_tab = ttk.Frame(self.notebook, padding=12)
         self.search_tab = ttk.Frame(self.notebook, padding=12)
+        self.schedule_tab = ttk.Frame(self.notebook, padding=12)
         self.results_tab = ttk.Frame(self.notebook, padding=12)
         self.applications_tab = ttk.Frame(self.notebook, padding=12)
         self.settings_tab = ttk.Frame(self.notebook, padding=12)
         self.notebook.add(self.profile_tab, text="Профіль")
         self.notebook.add(self.search_tab, text="Пошук")
+        self.notebook.add(self.schedule_tab, text="За розкладом (0)")
         self.notebook.add(self.results_tab, text="Результати")
         self.notebook.add(self.applications_tab, text="Мої заявки")
         self.notebook.add(self.settings_tab, text="Налаштування")
@@ -163,13 +230,20 @@ class JobCompassApp:
 
         self._build_profile_tab()
         self._build_search_tab()
+        self._build_schedule_tab()
         self._build_results_tab()
         self._build_applications_tab()
         self._build_settings_tab()
         self._configure_keyboard_navigation()
+        self._refresh_profile_selector()
         self._populate_profile(self.profile)
         self._refresh_sources()
+        self._load_active_workspace_state()
         self._refresh_applications()
+        self._refresh_unseen_jobs()
+        self.root.protocol("WM_DELETE_WINDOW", self._on_close)
+        self.root.after(1500, self._run_due_schedule)
+        self.root.after(3500, lambda: self._start_update_check(silent=True))
 
     def _configure_style(self) -> None:
         style = ttk.Style(self.root)
@@ -369,6 +443,328 @@ class JobCompassApp:
         elif widget_bottom > visible_bottom:
             destination = (widget_bottom - viewport_height) / content_height
             self.search_canvas.yview_moveto(min(1.0, max(0.0, destination)))
+
+    def _refresh_profile_selector(self) -> None:
+        guest_label = "Гостьовий режим (без збереження)"
+        self.profile_display_to_id = {guest_label: None}
+        for item in self.store.list_profiles():
+            self.profile_display_to_id[item.name] = item.profile_id
+        self.profile_selector.configure(values=tuple(self.profile_display_to_id))
+        selected = guest_label
+        for display, profile_id in self.profile_display_to_id.items():
+            if profile_id == self.store.active_profile_id:
+                selected = display
+                break
+        self.profile_selector_var.set(selected)
+        if hasattr(self, "profile_management_status_var"):
+            if self.store.is_guest:
+                self.profile_management_status_var.set(
+                    "Гостьовий режим: резюме, обране, перегляди та заявки "
+                    "зберігаються лише до закриття програми."
+                )
+            else:
+                self.profile_management_status_var.set(
+                    f"Активний профіль: {selected}. Усі персональні дані "
+                    "ізольовані від інших профілів."
+                )
+
+    def _on_close(self) -> None:
+        if self.search_running and not messagebox.askyesno(
+            "Пошук виконується",
+            "Закрити програму й перервати поточний пошук?",
+        ):
+            return
+        if self._workspace_has_unsaved_changes():
+            decision = messagebox.askyesnocancel(
+                "Незбережені зміни",
+                "Зберегти поточний профіль і параметри перед виходом?",
+            )
+            if decision is None:
+                return
+            if decision and not self._save_profile(show_confirmation=False):
+                return
+        self.root.destroy()
+
+    def _switch_profile(self, _event: object | None = None) -> None:
+        target_id = self.profile_display_to_id.get(self.profile_selector_var.get())
+        if target_id == self.store.active_profile_id:
+            return
+        if self.search_running:
+            messagebox.showwarning(
+                "Пошук виконується",
+                "Дочекайтеся завершення пошуку перед перемиканням профілю.",
+            )
+            self._refresh_profile_selector()
+            return
+        if self._workspace_has_unsaved_changes():
+            decision = messagebox.askyesnocancel(
+                "Незбережені зміни",
+                "Зберегти поточний профіль і налаштування перед перемиканням?",
+            )
+            if decision is None:
+                self._refresh_profile_selector()
+                return
+            if decision and not self._save_profile(show_confirmation=False):
+                self._refresh_profile_selector()
+                return
+        self.previous_profile_opened_at = self.store.activate_profile(target_id)
+        self._refresh_profile_selector()
+        self._load_active_workspace_state()
+        self.status_var.set(
+            "Увімкнено гостьовий режим"
+            if target_id is None
+            else f"Активовано профіль: {self.profile_selector_var.get()}"
+        )
+        self.root.after(500, self._check_due_schedule)
+
+    def _create_profile(self) -> bool:
+        if not self.store.is_guest and self._workspace_has_unsaved_changes():
+            decision = messagebox.askyesnocancel(
+                "Незбережені зміни",
+                "Зберегти поточний профіль перед створенням нового?",
+            )
+            if decision is None:
+                return False
+            if decision and not self._save_profile(show_confirmation=False):
+                return False
+        name = simpledialog.askstring(
+            "Новий профіль",
+            "Введіть ім’я або назву профілю:",
+            parent=self.root,
+        )
+        if not name:
+            return False
+        transfer = False
+        if self.store.is_guest and self._guest_workspace_has_content():
+            transfer = messagebox.askyesno(
+                "Перенести гостьові дані?",
+                "Перенести поточне резюме, фільтри, результати та обране "
+                "до нового профілю?",
+            )
+        try:
+            candidate = self._profile_from_form() if transfer else CandidateProfile()
+            preferences = (
+                self._capture_search_preferences()
+                if transfer
+                else SavedSearchPreferences()
+            )
+            guest_activity = self.store.snapshot_activity() if transfer else {}
+            created = self.store.create_profile(name, candidate)
+            self.store.save_search_preferences(preferences)
+            if transfer:
+                self.store.save_resume_info(
+                    self.current_resume_path, self.current_resume_text
+                )
+                self.store.restore_activity(guest_activity)
+        except (OSError, ValueError) as error:
+            messagebox.showerror("Не вдалося створити профіль", str(error))
+            return False
+        self.previous_profile_opened_at = created.last_opened_at
+        self._refresh_profile_selector()
+        self._load_active_workspace_state()
+        self.status_var.set(f"Створено профіль: {created.name}")
+        return True
+
+    def _rename_profile(self) -> None:
+        profile_id = self.store.active_profile_id
+        if profile_id is None:
+            messagebox.showinfo("Гостьовий режим", "Спочатку створіть профіль.")
+            return
+        current = self.store.get_profile_summary(profile_id)
+        name = simpledialog.askstring(
+            "Перейменувати профіль",
+            "Нова назва профілю:",
+            initialvalue=current.name if current else "",
+            parent=self.root,
+        )
+        if not name:
+            return
+        try:
+            self.store.rename_profile(profile_id, name)
+        except (OSError, ValueError) as error:
+            messagebox.showerror("Не вдалося перейменувати профіль", str(error))
+            return
+        self._refresh_profile_selector()
+
+    def _duplicate_profile(self) -> None:
+        profile_id = self.store.active_profile_id
+        if profile_id is None:
+            messagebox.showinfo("Гостьовий режим", "Спочатку створіть профіль.")
+            return
+        current = self.store.get_profile_summary(profile_id)
+        name = simpledialog.askstring(
+            "Дублювати профіль",
+            "Назва копії (історія та заявки не копіюються):",
+            initialvalue=f"{current.name} — копія" if current else "Копія",
+            parent=self.root,
+        )
+        if not name:
+            return
+        try:
+            self.store.duplicate_profile(profile_id, name)
+        except (OSError, ValueError) as error:
+            messagebox.showerror("Не вдалося дублювати профіль", str(error))
+            return
+        self._refresh_profile_selector()
+        self._load_active_workspace_state()
+
+    def _delete_profile(self) -> None:
+        profile_id = self.store.active_profile_id
+        if profile_id is None:
+            messagebox.showinfo("Гостьовий режим", "Немає активного профілю.")
+            return
+        current = self.store.get_profile_summary(profile_id)
+        if not messagebox.askyesno(
+            "Видалити профіль",
+            f"Назавжди видалити профіль «{current.name if current else ''}» "
+            "разом із його заявками, обраним і розкладом?",
+        ):
+            return
+        try:
+            sync_windows_search_task(
+                profile_id, SearchSchedule(enabled=False), self.store.path
+            )
+            self.store.delete_profile(profile_id)
+        except (OSError, ValueError) as error:
+            messagebox.showerror("Не вдалося видалити профіль", str(error))
+            return
+        self._refresh_profile_selector()
+        self._load_active_workspace_state()
+
+    def _export_profile(self) -> None:
+        profile_id = self.store.active_profile_id
+        if profile_id is None:
+            messagebox.showinfo("Гостьовий режим", "Спочатку створіть профіль.")
+            return
+        summary = self.store.get_profile_summary(profile_id)
+        path = filedialog.asksaveasfilename(
+            title="Експортувати профіль",
+            defaultextension=".json",
+            initialfile=f"JobCompass-{summary.name if summary else 'profile'}.json",
+            filetypes=(("JobCompass profile", "*.json"),),
+        )
+        if not path:
+            return
+        try:
+            self.store.export_profile(profile_id, path)
+        except (OSError, ValueError) as error:
+            messagebox.showerror("Не вдалося експортувати профіль", str(error))
+            return
+        messagebox.showinfo("JobCompass", "Профіль успішно експортовано.")
+
+    def _import_profile(self) -> None:
+        path = filedialog.askopenfilename(
+            title="Імпортувати профіль",
+            filetypes=(("JobCompass profile", "*.json"), ("Усі файли", "*.*")),
+        )
+        if not path:
+            return
+        try:
+            self.store.import_profile(path)
+        except (OSError, ValueError) as error:
+            messagebox.showerror("Не вдалося імпортувати профіль", str(error))
+            return
+        self._refresh_profile_selector()
+        self._load_active_workspace_state()
+
+    def _guest_workspace_has_content(self) -> bool:
+        profile = self._profile_from_form()
+        preferences = self._capture_search_preferences()
+        return bool(
+            profile != CandidateProfile()
+            or preferences.roles
+            or preferences.keywords
+            or preferences.locations
+            or self.current_resume_text
+            or self.store.load_last_result_job_ids()
+            or self.store.list_applications()
+            or self.store.list_favorite_job_ids()
+        )
+
+    def _workspace_has_unsaved_changes(self) -> bool:
+        if self.store.is_guest:
+            return self._guest_workspace_has_content()
+        try:
+            return (
+                self._profile_from_form() != (self.store.load_profile() or CandidateProfile())
+                or self._capture_search_preferences()
+                != self.store.load_search_preferences()
+                or (self.current_resume_path, self.current_resume_text)
+                != self.store.load_resume_info()
+            )
+        except ValueError:
+            return True
+
+    def _capture_search_preferences(self) -> SavedSearchPreferences:
+        selected_sources = tuple(
+            name for name, variable in self.source_vars.items() if variable.get()
+        )
+        return SavedSearchPreferences(
+            sources=(
+                () if len(selected_sources) == len(self.source_vars) else selected_sources
+            ),
+            roles=_split_list(self.role_var.get()),
+            keywords=_split_list(self.keyword_var.get()),
+            locations=tuple(self.selected_locations),
+            radius_km=(
+                round(self.location_radius_var.get())
+                if self.location_radius_var.get() >= 1
+                else None
+            ),
+            excluded_keywords=_split_list(self.excluded_keyword_var.get()),
+            excluded_companies=_split_list(self.excluded_company_var.get()),
+            remote_only=self.filter_remote_var.get(),
+            minimum_score=round(self.minimum_score_var.get()),
+            result_sort=self.result_sort_var.get(),
+        )
+
+    def _apply_search_preferences(self, preferences: SavedSearchPreferences) -> None:
+        self.role_var.set(", ".join(preferences.roles))
+        self.keyword_var.set(", ".join(preferences.keywords))
+        self.excluded_keyword_var.set(", ".join(preferences.excluded_keywords))
+        self.excluded_company_var.set(", ".join(preferences.excluded_companies))
+        self.filter_remote_var.set(preferences.remote_only)
+        self.minimum_score_var.set(preferences.minimum_score)
+        self.minimum_score_label.configure(text=f"{preferences.minimum_score}%")
+        self.location_radius_var.set(preferences.radius_km or 0)
+        self._update_radius_label(str(preferences.radius_km or 0))
+        self.selected_locations = list(preferences.locations)
+        self._refresh_selected_locations()
+        self.location_var.set("")
+        self.result_sort_var.set(
+            preferences.result_sort
+            if preferences.result_sort in _RESULT_SORT_OPTIONS
+            else "За релевантністю"
+        )
+        selected_sources = set(preferences.sources)
+        for name, variable in self.source_vars.items():
+            variable.set(not selected_sources or name in selected_sources)
+
+    def _load_active_workspace_state(self) -> None:
+        self.profile = self.store.load_profile() or CandidateProfile()
+        self._populate_profile(self.profile)
+        self.current_resume_path, self.current_resume_text = self.store.load_resume_info()
+        self.resume_path_var.set(
+            self.current_resume_path or "Резюме ще не завантажено"
+        )
+        self._set_text(self.resume_preview, self.current_resume_text)
+        self._apply_search_preferences(self.store.load_search_preferences())
+        self.last_search_profile = None
+        self.last_search_filters = None
+        self.last_search_jobs = []
+        self.last_location_prefiltered_job_ids = frozenset()
+        job_ids = set(self.store.load_last_result_job_ids())
+        jobs = [job for job in self.store.list_jobs() if job.job_id in job_ids]
+        self.ranked_jobs = search_jobs(
+            self.profile,
+            jobs,
+            SearchFilters(minimum_score=round(self.minimum_score_var.get())),
+        )
+        self._render_results()
+        self._refresh_applications()
+        self._refresh_unseen_jobs()
+        self._load_schedule_controls()
+        self._refresh_profile_selector()
 
     def _build_profile_tab(self) -> None:
         self.profile_tab.columnconfigure(0, weight=1)
@@ -696,6 +1092,98 @@ class JobCompassApp:
         self.search_canvas.bind("<End>", self._scroll_search_with_keyboard)
         self._bind_search_focus_scrolling(content)
 
+    def _build_schedule_tab(self) -> None:
+        self.schedule_tab.columnconfigure(0, weight=1)
+        self.schedule_tab.rowconfigure(2, weight=1)
+
+        header = ttk.Frame(self.schedule_tab)
+        header.grid(row=0, column=0, sticky="ew", pady=(0, 10))
+        ttk.Label(
+            header, text="Пошук за розкладом", style="Heading.TLabel"
+        ).pack(side="left")
+        ttk.Button(
+            header,
+            text="Позначити всі переглянутими",
+            command=self._mark_all_unseen_viewed,
+        ).pack(side="right")
+        ttk.Button(
+            header,
+            text="Запустити зараз",
+            command=self._run_scheduled_search_now,
+            style="Primary.TButton",
+        ).pack(side="right", padx=(0, 8))
+
+        controls = ttk.LabelFrame(
+            self.schedule_tab, text="Щоденний автоматичний пошук", padding=10
+        )
+        controls.grid(row=1, column=0, sticky="ew", pady=(0, 10))
+        controls.columnconfigure(5, weight=1)
+        self.schedule_enabled_var = BooleanVar(value=False)
+        ttk.Checkbutton(
+            controls,
+            text="Увімкнути для активного профілю",
+            variable=self.schedule_enabled_var,
+        ).grid(row=0, column=0, sticky="w")
+        ttk.Label(controls, text="Час:").grid(row=0, column=1, padx=(18, 6))
+        self.schedule_time_var = StringVar(value="09:00")
+        ttk.Combobox(
+            controls,
+            textvariable=self.schedule_time_var,
+            values=tuple(f"{hour:02d}:{minute:02d}" for hour in range(24) for minute in (0, 30)),
+            state="readonly",
+            width=7,
+        ).grid(row=0, column=2, sticky="w")
+        ttk.Button(
+            controls, text="Зберегти розклад", command=self._save_schedule
+        ).grid(row=0, column=3, padx=(12, 0))
+        self.schedule_status_var = StringVar(value="Розклад не налаштовано")
+        ttk.Label(
+            controls,
+            textvariable=self.schedule_status_var,
+            foreground="#555555",
+        ).grid(row=0, column=4, sticky="w", padx=(18, 0))
+        ttk.Label(
+            controls,
+            text=(
+                "Пошук використовує збережені посади, міста, джерела та фільтри "
+                "цього профілю. Якщо програма була закрита, прострочений пошук "
+                "запуститься після наступного відкриття."
+            ),
+            wraplength=1000,
+        ).grid(row=1, column=0, columnspan=6, sticky="w", pady=(8, 0))
+
+        list_frame = ttk.LabelFrame(
+            self.schedule_tab,
+            text="Нові та ще не переглянуті вакансії",
+            padding=8,
+        )
+        list_frame.grid(row=2, column=0, sticky="nsew")
+        list_frame.columnconfigure(0, weight=1)
+        list_frame.rowconfigure(0, weight=1)
+        columns = ("published", "title", "company", "location", "source")
+        self.unseen_tree = ttk.Treeview(
+            list_frame, columns=columns, show="headings", selectmode="browse"
+        )
+        for column, label, width in (
+            ("published", "Опубліковано", 110),
+            ("title", "Вакансія", 300),
+            ("company", "Компанія", 200),
+            ("location", "Локація", 190),
+            ("source", "Джерело", 130),
+        ):
+            self.unseen_tree.heading(column, text=label)
+            self.unseen_tree.column(column, width=width, minwidth=80)
+        unseen_scroll = ttk.Scrollbar(
+            list_frame, orient="vertical", command=self.unseen_tree.yview
+        )
+        self.unseen_tree.configure(yscrollcommand=unseen_scroll.set)
+        self.unseen_tree.grid(row=0, column=0, sticky="nsew")
+        unseen_scroll.grid(row=0, column=1, sticky="ns")
+        self.unseen_tree.bind("<Double-1>", lambda _event: self._open_unseen_job())
+        ttk.Button(
+            list_frame, text="Відкрити вибрану вакансію", command=self._open_unseen_job
+        ).grid(row=1, column=0, sticky="e", pady=(8, 0))
+
     def _build_results_tab(self) -> None:
         self.results_tab.columnconfigure(0, weight=1)
         self.results_tab.rowconfigure(2, weight=1)
@@ -895,6 +1383,314 @@ class JobCompassApp:
             history_frame, text="Оновити", command=self._update_application_status
         ).grid(row=1, column=3, padx=(8, 0), pady=(8, 0))
 
+    def _show_settings_dialog(self) -> None:
+        """Open the compact global settings and application information dialog."""
+
+        if self.update_window is not None and self.update_window.winfo_exists():
+            self.update_window.deiconify()
+            self.update_window.lift()
+            self.update_window.focus_force()
+            return
+
+        window = Toplevel(self.root)
+        self.update_window = window
+        window.title("Налаштування JobCompass")
+        window.transient(self.root)
+        window.resizable(False, False)
+        window.protocol("WM_DELETE_WINDOW", self._close_settings_dialog)
+
+        container = ttk.Frame(window, padding=18)
+        container.grid(row=0, column=0, sticky="nsew")
+        container.columnconfigure(0, weight=1)
+        ttk.Label(container, text="Налаштування", style="Heading.TLabel").grid(
+            row=0, column=0, sticky="w"
+        )
+        ttk.Label(
+            container,
+            text=(
+                "Тут зберігатимуться загальні параметри програми, "
+                "які не залежать від профілю кандидата."
+            ),
+            wraplength=500,
+        ).grid(row=1, column=0, sticky="w", pady=(4, 14))
+
+        update_frame = ttk.LabelFrame(container, text="Оновлення", padding=14)
+        update_frame.grid(row=2, column=0, sticky="ew")
+        update_frame.columnconfigure(0, weight=1)
+        self.update_status_var = StringVar(
+            value="Перевірте, чи доступна нова версія JobCompass."
+        )
+        ttk.Label(
+            update_frame,
+            textvariable=self.update_status_var,
+            wraplength=470,
+            justify="left",
+        ).grid(row=0, column=0, sticky="w")
+        self.update_notes_var = StringVar(value="")
+        ttk.Label(
+            update_frame,
+            textvariable=self.update_notes_var,
+            wraplength=470,
+            justify="left",
+        ).grid(row=1, column=0, sticky="w", pady=(6, 0))
+        self.update_button = ttk.Button(
+            update_frame,
+            text="Перевірити оновлення",
+            command=self._handle_update_button,
+        )
+        self.update_button.grid(row=2, column=0, sticky="w", pady=(12, 0))
+
+        ttk.Separator(container).grid(row=3, column=0, sticky="ew", pady=(18, 10))
+        ttk.Label(
+            container,
+            text=f"Поточна версія: {__version__}",
+            foreground="#666666",
+        ).grid(row=4, column=0, sticky="w")
+
+        window.update_idletasks()
+        left = self.root.winfo_rootx() + max(
+            0, (self.root.winfo_width() - window.winfo_reqwidth()) // 2
+        )
+        top = self.root.winfo_rooty() + max(
+            0, (self.root.winfo_height() - window.winfo_reqheight()) // 3
+        )
+        window.geometry(f"+{left}+{top}")
+        window.grab_set()
+        window.focus_set()
+
+        if self.latest_release is not None:
+            self._display_release_state(self.latest_release)
+        elif not self.update_check_running:
+            self._start_update_check(silent=False)
+        else:
+            self.update_status_var.set("Перевіряємо наявність оновлень…")
+            self.update_button.state(["disabled"])
+
+    def _close_settings_dialog(self) -> None:
+        if self.update_window is not None:
+            try:
+                self.update_window.grab_release()
+                self.update_window.destroy()
+            except Exception:
+                pass
+        self.update_window = None
+        self.update_status_var = None
+        self.update_notes_var = None
+        self.update_button = None
+
+    def _handle_update_button(self) -> None:
+        if self.update_check_running or self.update_download_running:
+            return
+        if self.latest_release is None or not is_newer_version(
+            self.latest_release.version
+        ):
+            self._start_update_check(silent=False)
+            return
+        self._download_or_open_update(self.latest_release)
+
+    def _start_update_check(self, *, silent: bool) -> None:
+        if self.update_check_running:
+            return
+        self.update_check_running = True
+        if self.update_status_var is not None:
+            self.update_status_var.set("Перевіряємо наявність оновлень…")
+        if self.update_button is not None:
+            self.update_button.state(["disabled"])
+
+        def worker() -> None:
+            try:
+                self.update_queue.put(("ok", check_latest_release()))
+            except UpdateError as error:
+                self.update_queue.put(("error", str(error)))
+
+        Thread(target=worker, daemon=True).start()
+        self.root.after(100, lambda: self._poll_update_check(silent))
+
+    def _poll_update_check(self, silent: bool) -> None:
+        try:
+            outcome, payload = self.update_queue.get_nowait()
+        except Empty:
+            if self.update_check_running:
+                self.root.after(100, lambda: self._poll_update_check(silent))
+            return
+        self.update_check_running = False
+        if self.update_button is not None:
+            self.update_button.state(["!disabled"])
+        if outcome == "error":
+            if self.update_status_var is not None:
+                self.update_status_var.set(f"Не вдалося перевірити оновлення: {payload}")
+                self.update_button.configure(text="Спробувати ще раз")
+            elif not silent:
+                messagebox.showerror("Оновлення", str(payload), parent=self.root)
+            return
+        release = payload
+        if not isinstance(release, ReleaseInfo):
+            return
+        self.latest_release = release
+        self._display_release_state(release)
+        if is_newer_version(release.version):
+            self.settings_button.configure(text="⚙ •")
+            self.status_var.set(
+                f"Доступне оновлення JobCompass {release.version}. Відкрийте ⚙."
+            )
+
+    def _display_release_state(self, release: ReleaseInfo) -> None:
+        if self.update_status_var is None or self.update_button is None:
+            return
+        if is_newer_version(release.version):
+            self.update_status_var.set(
+                f"Доступна нова версія {release.version} (встановлено {__version__})."
+            )
+            notes = release.notes.strip()
+            if len(notes) > 700:
+                notes = notes[:697].rstrip() + "…"
+            self.update_notes_var.set(
+                f"Що змінило:\n{notes}" if notes else ""
+            )
+            mode = runtime_mode()
+            label = {
+                "installed": "Завантажити й установити",
+                "portable": "Завантажити portable-версію",
+                "source": "Відкрити сторінку оновлення",
+            }[mode]
+            self.update_button.configure(text=label)
+        else:
+            self.update_status_var.set(
+                f"У вас актуальна версія JobCompass {__version__}."
+            )
+            self.update_notes_var.set("")
+            self.update_button.configure(text="Перевірити ще раз")
+
+    def _download_or_open_update(self, release: ReleaseInfo) -> None:
+        mode = runtime_mode()
+        if mode == "source":
+            if release.page_url:
+                webbrowser.open(release.page_url)
+            return
+        asset = release.asset_for(mode)
+        if asset is None:
+            messagebox.showerror(
+                "Оновлення",
+                "У GitHub Release немає потрібного інсталяційного файла.",
+                parent=self.update_window or self.root,
+            )
+            return
+        if mode == "portable":
+            destination = Path.home() / "Downloads" / asset.name
+        else:
+            destination = Path(tempfile.gettempdir()) / "JobCompass" / asset.name
+
+        self.update_download_running = True
+        if self.update_status_var is not None:
+            self.update_status_var.set(
+                f"Завантажуємо {asset.name} і перевіряємо SHA-256…"
+            )
+        if self.update_button is not None:
+            self.update_button.state(["disabled"])
+
+        def worker() -> None:
+            try:
+                path = download_release_asset(asset, destination)
+                self.update_download_queue.put(("ok", path, mode))
+            except (UpdateError, OSError) as error:
+                self.update_download_queue.put(("error", str(error), mode))
+
+        Thread(target=worker, daemon=True).start()
+        self.root.after(100, self._poll_update_download)
+
+    def _poll_update_download(self) -> None:
+        try:
+            outcome, payload, mode = self.update_download_queue.get_nowait()
+        except Empty:
+            if self.update_download_running:
+                self.root.after(100, self._poll_update_download)
+            return
+        self.update_download_running = False
+        if self.update_button is not None:
+            self.update_button.state(["!disabled"])
+        if outcome == "error":
+            if self.update_status_var is not None:
+                self.update_status_var.set(f"Не вдалося завантажити оновлення: {payload}")
+            messagebox.showerror(
+                "Оновлення",
+                str(payload),
+                parent=self.update_window or self.root,
+            )
+            return
+
+        path = Path(payload)
+        if mode == "portable":
+            if self.update_status_var is not None:
+                self.update_status_var.set(f"Нову portable-версію збережено: {path}")
+            messagebox.showinfo(
+                "Оновлення завантажено",
+                (
+                    "Закрийте JobCompass і розпакуйте нову portable-версію. "
+                    "Папку data та файл portable.flag потрібно зберегти."
+                ),
+                parent=self.update_window or self.root,
+            )
+            try:
+                os.startfile(path.parent)  # type: ignore[attr-defined]
+            except OSError:
+                pass
+            return
+
+        if messagebox.askyesno(
+            "Установити оновлення",
+            (
+                "Оновлення перевірено й готове до встановлення. "
+                "JobCompass буде закрито. Запустити інсталятор зараз?"
+            ),
+            parent=self.update_window or self.root,
+        ):
+            self._launch_update_installer(path)
+
+    def _launch_update_installer(self, path: Path) -> None:
+        if self.search_running:
+            messagebox.showwarning(
+                "Триває пошук",
+                "Дочекайтеся завершення пошуку перед оновленням.",
+                parent=self.update_window or self.root,
+            )
+            return
+        if self._workspace_has_unsaved_changes():
+            decision = messagebox.askyesnocancel(
+                "Незбережені зміни",
+                "Зберегти поточний профіль і параметри перед оновленням?",
+                parent=self.update_window or self.root,
+            )
+            if decision is None:
+                return
+            if decision and not self._save_profile(show_confirmation=False):
+                return
+        escaped_path = str(path).replace("'", "''")
+        wait_and_start = (
+            f"Wait-Process -Id {os.getpid()} -ErrorAction SilentlyContinue; "
+            f"Start-Process -FilePath '{escaped_path}'"
+        )
+        try:
+            subprocess.Popen(
+                [
+                    "powershell.exe",
+                    "-NoProfile",
+                    "-WindowStyle",
+                    "Hidden",
+                    "-Command",
+                    wait_and_start,
+                ],
+                close_fds=True,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+        except OSError as error:
+            messagebox.showerror(
+                "Не вдалося запустити інсталятор",
+                str(error),
+                parent=self.update_window or self.root,
+            )
+            return
+        self.root.destroy()
+
     def _build_settings_tab(self) -> None:
         self.settings_tab.columnconfigure(0, weight=1)
         ttk.Label(
@@ -916,10 +1712,36 @@ class JobCompassApp:
             wraplength=850,
         ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(10, 0))
 
+        profile_management = ttk.LabelFrame(
+            self.settings_tab, text="Керування профілями", padding=12
+        )
+        profile_management.grid(row=2, column=0, sticky="ew", pady=(0, 12))
+        self.profile_management_status_var = StringVar()
+        ttk.Label(
+            profile_management,
+            textvariable=self.profile_management_status_var,
+            wraplength=900,
+        ).grid(row=0, column=0, columnspan=5, sticky="w", pady=(0, 10))
+        ttk.Button(
+            profile_management, text="Перейменувати", command=self._rename_profile
+        ).grid(row=1, column=0, sticky="w")
+        ttk.Button(
+            profile_management, text="Дублювати", command=self._duplicate_profile
+        ).grid(row=1, column=1, sticky="w", padx=(8, 0))
+        ttk.Button(
+            profile_management, text="Експортувати", command=self._export_profile
+        ).grid(row=1, column=2, sticky="w", padx=(8, 0))
+        ttk.Button(
+            profile_management, text="Імпортувати", command=self._import_profile
+        ).grid(row=1, column=3, sticky="w", padx=(8, 0))
+        ttk.Button(
+            profile_management, text="Видалити", command=self._delete_profile
+        ).grid(row=1, column=4, sticky="w", padx=(8, 0))
+
         connectors = ttk.LabelFrame(
             self.settings_tab, text="Конектори та формати", padding=12
         )
-        connectors.grid(row=2, column=0, sticky="ew")
+        connectors.grid(row=3, column=0, sticky="ew")
         ttk.Label(
             connectors,
             text=(
@@ -1001,34 +1823,78 @@ class JobCompassApp:
             return
         try:
             result = load_resume(path)
-            self.store.save_profile(result.profile)
         except (OSError, ValueError) as error:
             messagebox.showerror("Не вдалося прочитати резюме", str(error))
             return
         self.profile = result.profile
+        if self.store.is_guest:
+            self.store.set_guest_profile(result.profile)
         self._populate_profile(result.profile)
-        self.resume_path_var.set(str(Path(path).resolve()))
+        self.current_resume_path = str(Path(path).resolve())
+        self.current_resume_text = result.raw_text
+        self.resume_path_var.set(self.current_resume_path)
         self._set_text(self.resume_preview, result.raw_text)
         self.status_var.set(
-            "Резюме завантажено й активовано — ручне заповнення полів необов’язкове"
+            "Резюме завантажено — натисніть «Зберегти профіль», щоб залишити його після закриття"
         )
         if result.warnings:
             messagebox.showwarning(
                 "Резюме готове до використання",
-                "Профіль уже збережено локально. Поля можна не заповнювати.\n\n"
+                "Резюме активне в поточному сеансі. Поля можна виправити перед збереженням.\n\n"
                 + "\n\n".join(result.warnings),
             )
 
-    def _save_profile(self) -> None:
+    def _save_profile(self, show_confirmation: bool = True) -> bool:
+        scheduler_warning = ""
         try:
             profile = self._profile_from_form()
-            self.store.save_profile(profile)
+            preferences = self._capture_search_preferences()
+            if self.store.is_guest:
+                guest_activity = self.store.snapshot_activity()
+                name = simpledialog.askstring(
+                    "Зберегти як профіль",
+                    "Введіть ім’я або назву профілю:",
+                    initialvalue=profile.full_name,
+                    parent=self.root,
+                )
+                if not name:
+                    return False
+                self.store.create_profile(name, profile)
+                self.store.restore_activity(guest_activity)
+            else:
+                self.store.save_profile(profile)
+            self.store.save_search_preferences(preferences)
+            self.store.save_resume_info(
+                self.current_resume_path, self.current_resume_text
+            )
+            current_schedule = self.store.load_schedule()
+            schedule = SearchSchedule(
+                enabled=self.schedule_enabled_var.get(),
+                daily_time=self.schedule_time_var.get(),
+                last_run_at=current_schedule.last_run_at,
+            )
+            self.store.save_schedule(schedule)
         except (OSError, ValueError) as error:
             messagebox.showerror("Не вдалося зберегти профіль", str(error))
-            return
+            return False
+        try:
+            sync_windows_search_task(
+                self.store.active_profile_id or "", schedule, self.store.path
+            )
+        except OSError as error:
+            scheduler_warning = f"\n\nФонове завдання Windows: {error}"
         self.profile = profile
-        self.status_var.set("Профіль збережено локально")
-        messagebox.showinfo("JobCompass", "Профіль збережено.")
+        self._refresh_profile_selector()
+        self._load_schedule_controls()
+        self._refresh_unseen_jobs()
+        self.status_var.set("Профіль і всі параметри пошуку збережено локально")
+        if show_confirmation:
+            messagebox.showinfo(
+                "JobCompass",
+                "Профіль, резюме, міста, посади, фільтри та розклад збережено."
+                + scheduler_warning,
+            )
+        return True
 
     def _import_jobs(self) -> None:
         path = filedialog.askopenfilename(
@@ -1067,7 +1933,7 @@ class JobCompassApp:
                 self.sources_frame, text=source, variable=variable
             ).pack(anchor="w", pady=2)
 
-    def _run_search(self) -> None:
+    def _run_search(self, *, scheduled: bool = False) -> None:
         if self.search_running:
             return
         try:
@@ -1088,7 +1954,6 @@ class JobCompassApp:
                 )
             if roles and profile.desired_roles != roles:
                 profile = replace(profile, desired_roles=roles)
-                self.store.save_profile(profile)
                 self._populate_profile(profile)
             online_names = tuple(
                 source for source in selected_sources if source in self.online_sources
@@ -1114,7 +1979,10 @@ class JobCompassApp:
                 minimum_score=round(self.minimum_score_var.get()),
             )
         except (OSError, ValueError) as error:
-            messagebox.showerror("Пошук не виконано", str(error))
+            if scheduled:
+                self.schedule_status_var.set(f"Автопошук не запущено: {error}")
+            else:
+                messagebox.showerror("Пошук не виконано", str(error))
             return
 
         query = SearchQuery(
@@ -1126,10 +1994,12 @@ class JobCompassApp:
             remote_only=filters.remote_only,
         )
         if not online_names:
+            self.scheduled_search_running = scheduled
             self._complete_search(profile, filters, [], {}, {})
             return
 
         self.search_running = True
+        self.scheduled_search_running = scheduled
         self.ranked_jobs = []
         self.empty_results_message = "Триває новий пошук вакансій…"
         self._render_results()
@@ -1242,6 +2112,14 @@ class JobCompassApp:
                 filters,
                 location_prefiltered_job_ids=location_prefiltered_job_ids,
             )
+            result_job_ids = [item.job.job_id for item in self.ranked_jobs]
+            self.store.save_last_result_job_ids(result_job_ids)
+            new_count = self.store.record_job_discoveries(result_job_ids)
+            if self.scheduled_search_running and not self.store.is_guest:
+                self.store.mark_schedule_run()
+                self.schedule_status_var.set(
+                    f"Автопошук завершено: нових вакансій — {new_count}"
+                )
             if self.ranked_jobs:
                 self.empty_results_message = ""
             elif broadly_matching and not matching_before_score:
@@ -1281,6 +2159,8 @@ class JobCompassApp:
             self.ranked_jobs = []
         finally:
             self.search_running = False
+            was_scheduled = self.scheduled_search_running
+            self.scheduled_search_running = False
             self.search_button.configure(
                 state="normal", text="Знайти вакансії в інтернеті"
             )
@@ -1288,7 +2168,9 @@ class JobCompassApp:
         self.profile = profile
         self._refresh_sources()
         self._render_results()
-        self.notebook.select(self.results_tab)
+        self._refresh_unseen_jobs()
+        self._load_schedule_controls()
+        self.notebook.select(self.schedule_tab if was_scheduled else self.results_tab)
         source_summary = ", ".join(
             f"{name}: {count}" for name, count in counts.items()
         )
@@ -1474,6 +2356,131 @@ class JobCompassApp:
             lines.append("\nОпис:\n" + job.description)
         self._set_text(self.result_details, "\n".join(lines))
 
+    def _load_schedule_controls(self) -> None:
+        if self.store.is_guest:
+            self.schedule_enabled_var.set(False)
+            self.schedule_time_var.set("09:00")
+            self.schedule_status_var.set(
+                "Гостьовий режим: створіть профіль, щоб увімкнути розклад."
+            )
+            return
+        schedule = self.store.load_schedule()
+        self.schedule_enabled_var.set(schedule.enabled)
+        self.schedule_time_var.set(schedule.daily_time)
+        if schedule.last_run_at is None:
+            last_run = "ще не запускався"
+        else:
+            last_run = schedule.last_run_at.astimezone().strftime("%d.%m.%Y %H:%M")
+        self.schedule_status_var.set(f"Останній запуск: {last_run}")
+
+    def _save_schedule(self) -> None:
+        requested_enabled = self.schedule_enabled_var.get()
+        requested_time = self.schedule_time_var.get()
+        if self.store.is_guest:
+            if not messagebox.askyesno(
+                "Потрібен профіль",
+                "Автоматичний пошук потребує профілю. Створити його зараз?",
+            ):
+                return
+            if not self._create_profile():
+                return
+            self.schedule_enabled_var.set(requested_enabled)
+            self.schedule_time_var.set(requested_time)
+        if not self._save_profile(show_confirmation=False):
+            return
+        try:
+            current = self.store.load_schedule()
+            schedule = SearchSchedule(
+                enabled=self.schedule_enabled_var.get(),
+                daily_time=self.schedule_time_var.get(),
+                last_run_at=current.last_run_at,
+            )
+            self.store.save_schedule(schedule)
+            scheduler_message = sync_windows_search_task(
+                self.store.active_profile_id or "", schedule, self.store.path
+            )
+        except (OSError, ValueError) as error:
+            messagebox.showerror("Не вдалося зберегти розклад", str(error))
+            return
+        self._load_schedule_controls()
+        messagebox.showinfo(
+            "JobCompass",
+            "Розклад і поточні параметри пошуку збережено.\n\n"
+            + scheduler_message,
+        )
+
+    def _run_due_schedule(self) -> None:
+        self._check_due_schedule()
+        self.root.after(60_000, self._run_due_schedule)
+
+    def _check_due_schedule(self) -> None:
+        if self.search_running or self.store.is_guest:
+            return
+        try:
+            schedule = self.store.load_schedule()
+        except ValueError as error:
+            self.schedule_status_var.set(f"Помилка розкладу: {error}")
+            return
+        if schedule.is_due():
+            self.schedule_status_var.set("Запускаю прострочений щоденний пошук…")
+            self._run_search(scheduled=True)
+
+    def _run_scheduled_search_now(self) -> None:
+        if self.store.is_guest:
+            if not messagebox.askyesno(
+                "Потрібен профіль",
+                "Пошук за розкладом зберігає нові вакансії окремо для кандидата. "
+                "Створити профіль?",
+            ):
+                return
+            if not self._create_profile():
+                return
+        if self._workspace_has_unsaved_changes():
+            if not messagebox.askyesno(
+                "Зберегти параметри",
+                "Зберегти поточні посади, міста та фільтри перед запуском?",
+            ):
+                return
+            if not self._save_profile(show_confirmation=False):
+                return
+        self._run_search(scheduled=True)
+
+    def _refresh_unseen_jobs(self) -> None:
+        if not hasattr(self, "unseen_tree"):
+            return
+        self.unseen_tree.delete(*self.unseen_tree.get_children())
+        unseen = self.store.list_unseen_jobs()
+        for job in unseen:
+            self.unseen_tree.insert(
+                "",
+                END,
+                iid=job.job_id,
+                values=(
+                    self._format_published_at(job.published_at),
+                    job.title,
+                    job.company,
+                    job.location,
+                    job.source,
+                ),
+            )
+        self.notebook.tab(
+            self.schedule_tab, text=f"За розкладом ({len(unseen)})"
+        )
+
+    def _open_unseen_job(self) -> None:
+        selection = self.unseen_tree.selection()
+        if not selection:
+            messagebox.showwarning("JobCompass", "Виберіть вакансію зі списку.")
+            return
+        job = self.store.get_job(selection[0])
+        if job is not None and self._open_job_for(job):
+            self._refresh_unseen_jobs()
+
+    def _mark_all_unseen_viewed(self) -> None:
+        self.store.mark_all_jobs_seen()
+        self._refresh_unseen_jobs()
+        self.status_var.set("Усі вакансії позначено переглянутими")
+
     def _open_job(self) -> None:
         ranked = self._selected_result()
         if ranked is None:
@@ -1485,9 +2492,20 @@ class JobCompassApp:
             messagebox.showwarning("JobCompass", "Для вакансії немає посилання.")
             return False
         webbrowser.open(job.url)
+        self.store.mark_job_seen(job.job_id)
+        self._refresh_unseen_jobs()
         return True
 
     def _prepare_application(self) -> None:
+        if self.store.is_guest:
+            if not messagebox.askyesno(
+                "Потрібен профіль",
+                "Щоб зберігати заявки й супровідні листи, створіть профіль. "
+                "Створити зараз?",
+            ):
+                return
+            if not self._create_profile():
+                return
         ranked = self._selected_result()
         if ranked is None:
             return
@@ -1737,6 +2755,15 @@ class JobCompassApp:
     def _set_status(
         self, job: JobPosting, status: ApplicationStatus, notes: str | None = None
     ) -> bool:
+        if self.store.is_guest:
+            if not messagebox.askyesno(
+                "Потрібен профіль",
+                "Обране та історія заявок у гостьовому режимі не зберігаються. "
+                "Створити профіль зараз?",
+            ):
+                return False
+            if not self._create_profile():
+                return False
         existing = self.store.get_application(job.job_id)
         if status is ApplicationStatus.APPLIED and existing is not None:
             if existing.has_submission_history:
@@ -1753,6 +2780,8 @@ class JobCompassApp:
                     return False
         try:
             self.store.set_application_status(job.job_id, status, notes)
+            if status is ApplicationStatus.INTERESTING:
+                self.store.set_job_favorite(job.job_id, True)
         except (OSError, ValueError) as error:
             messagebox.showerror("Не вдалося оновити статус", str(error))
             return False
@@ -1763,6 +2792,8 @@ class JobCompassApp:
 
     def _refresh_applications(self) -> None:
         self.applications_tree.delete(*self.applications_tree.get_children())
+        self._set_text(self.application_history, "")
+        self.application_notes_var.set("")
         jobs = {job.job_id: job for job in self.store.list_jobs()}
         for application in sorted(
             self.store.list_applications(), key=lambda item: item.updated_at, reverse=True
