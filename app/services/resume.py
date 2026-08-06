@@ -19,6 +19,10 @@ from app.core.taxonomy import (
 
 
 _EMAIL_PATTERN = re.compile(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", re.I)
+_PHONE_PATTERN = re.compile(r"(?<!\w)(?:\+?\d[\d ()/.-]{7,}\d)(?!\w)")
+_GERMAN_POSTAL_LOCATION_PATTERN = re.compile(
+    r"\b\d{5}\s+(?P<city>[A-ZÄÖÜ][A-Za-zÄÖÜäöüß.-]+)\b"
+)
 _YEARS_PATTERN = re.compile(
     r"(?P<years>\d+(?:[.,]\d+)?)\s*(?:years?|yrs?|jahr(?:e|en)?|рок(?:и|ів)?|р\.)\b",
     re.I,
@@ -146,7 +150,35 @@ def _pdf_text(path: Path) -> str:
             "У PDF не знайдено текстового шару. Ймовірно, це скан або зображення; "
             "для такого файла потрібне OCR."
         )
-    return text
+    return _normalize_spaced_pdf_text(text)
+
+
+def _normalize_spaced_pdf_text(text: str) -> str:
+    """Repair PDFs that expose every glyph as a separately spaced token.
+
+    Some layout-oriented PDF generators encode ``Köngen`` as ``K ö n g e n``
+    while retaining two or more spaces between real words.  Only segments
+    dominated by one-character tokens are compacted, so ordinary extracted
+    text is left unchanged.
+    """
+
+    normalized_lines: list[str] = []
+    for line in text.splitlines():
+        segments = re.split(r"\s{2,}", line.strip())
+        normalized_segments: list[str] = []
+        for segment in segments:
+            tokens = segment.split()
+            single_character_ratio = (
+                sum(len(token) == 1 for token in tokens) / len(tokens)
+                if tokens
+                else 0.0
+            )
+            if len(tokens) >= 2 and single_character_ratio >= 0.75:
+                segment = "".join(tokens)
+            if segment:
+                normalized_segments.append(segment)
+        normalized_lines.append(" ".join(normalized_segments))
+    return "\n".join(normalized_lines)
 
 
 def _extract_language_mentions(text: str) -> list[str]:
@@ -169,6 +201,45 @@ def _extract_language_mentions(text: str) -> list[str]:
             result.append(value)
             seen.add(key)
     return result
+
+
+def _infer_name_before_personal_data(text: str) -> str:
+    """Conservatively read a name placed directly above a personal-data heading."""
+
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    marker_index = next(
+        (
+            index
+            for index, line in enumerate(lines[:6])
+            if line.casefold()
+            in {"persönliche daten", "personal data", "personal details"}
+        ),
+        None,
+    )
+    if marker_index is None or not 1 <= marker_index <= 2:
+        return ""
+    candidates = lines[:marker_index]
+    if not all(
+        re.fullmatch(r"[A-Za-zÄÖÜäöüß'’-]{2,40}", value)
+        for value in candidates
+    ):
+        return ""
+    return " ".join(candidates)
+
+
+def _extract_phone(text: str) -> str:
+    candidates: list[tuple[bool, str]] = []
+    for match in _PHONE_PATTERN.finditer(text):
+        value = " ".join(match.group(0).split())
+        if re.search(r"\b\d{1,2}/\d{4}\b", value):
+            continue
+        digit_count = sum(character.isdigit() for character in value)
+        if 8 <= digit_count <= 15:
+            candidates.append((value.startswith("+"), value))
+    if not candidates:
+        return ""
+    candidates.sort(key=lambda item: item[0], reverse=True)
+    return candidates[0][1]
 
 
 def _profile_from_text(text: str) -> ResumeLoadResult:
@@ -205,6 +276,8 @@ def _profile_from_text(text: str) -> ResumeLoadResult:
 
         if field_name in _LIST_FIELDS:
             lists[field_name].extend(_split_values(value))
+            if inline_value:
+                active_field = None
         elif field_name == "experience":
             match = _YEARS_PATTERN.search(value)
             if match:
@@ -232,6 +305,18 @@ def _profile_from_text(text: str) -> ResumeLoadResult:
         email_match = _EMAIL_PATTERN.search(text)
         if email_match:
             scalar["email"] = email_match.group(0)
+    if "phone" not in scalar:
+        inferred_phone = _extract_phone(text)
+        if inferred_phone:
+            scalar["phone"] = inferred_phone
+    if "full_name" not in scalar:
+        inferred_name = _infer_name_before_personal_data(text)
+        if inferred_name:
+            scalar["full_name"] = inferred_name
+    if not lists["preferred_locations"]:
+        location_match = _GERMAN_POSTAL_LOCATION_PATTERN.search(text)
+        if location_match:
+            lists["preferred_locations"].append(location_match.group("city"))
 
     profile = CandidateProfile(
         full_name=scalar.get("full_name", ""),

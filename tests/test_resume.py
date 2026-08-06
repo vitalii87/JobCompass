@@ -7,7 +7,7 @@ import zipfile
 from pathlib import Path
 
 from app.core.matcher import JobMatcher
-from app.core.models import JobPosting
+from app.core.models import JobPosting, MatchLevel
 from app.services.resume import load_resume
 
 
@@ -116,6 +116,36 @@ Location: Berlin
         self.assertEqual(result.profile.skills, ("Python", "SQL"))
         self.assertEqual(result.profile.languages, ("German B2",))
 
+    def test_spaced_pdf_glyphs_are_rejoined_before_extraction(self) -> None:
+        lines = (
+            "A n n a",
+            "Z h y l i a i e v a",
+            "P e r s o n a l  D a t a",
+            "H a l d e n w e g  3 1 ,  7 3 2 5 7  K o e n g e n",
+            "K e n n t n i s s e :  M S  O f f i c e ,  E x c e l",
+            "S p r a c h e n :  D e u t s c h  B 2 ,  E n g l i s c h",
+            "a n n a . t e s t @ e x a m p l e . c o m",
+            "0 8 / 2 0 1 5  -  0 6 / 2 0 1 6",
+            "+ 4 9 1 7 5 1 2 3 4 5 6 7",
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "spaced-resume.pdf"
+            path.write_bytes(_minimal_pdf(lines))
+
+            result = load_resume(path)
+
+        self.assertIn("Kenntnisse: MS Office, Excel", result.raw_text)
+        self.assertEqual(result.profile.full_name, "Anna Zhyliaieva")
+        self.assertEqual(result.profile.email, "anna.test@example.com")
+        self.assertEqual(result.profile.phone, "+491751234567")
+        self.assertEqual(result.profile.preferred_locations, ("Koengen",))
+        self.assertTrue(
+            {"Microsoft Office", "Microsoft Excel"}.issubset(
+                set(result.profile.skills)
+            )
+        )
+        self.assertEqual(result.profile.languages, ("Deutsch B2", "Englisch"))
+
     def test_image_only_pdf_explains_that_ocr_is_required(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "scan.pdf"
@@ -151,7 +181,9 @@ Deutsch B2
                 required_skills=("Python", "Docker"),
             ),
         )
-        self.assertEqual(match.score, 100)
+        self.assertEqual(match.score, 75)
+        self.assertEqual(match.level, MatchLevel.PARTIAL)
+        self.assertEqual(match.evidence_coverage, 50)
 
     def test_german_resume_headings_are_recognized(self) -> None:
         text = """Name: Vitalii

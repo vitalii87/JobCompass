@@ -45,7 +45,7 @@ class SearchTests(unittest.TestCase):
         )
 
         self.assertEqual([item.job.job_id for item in results], ["board-a:1"])
-        self.assertEqual(results[0].match.score, 100)
+        self.assertEqual(results[0].match.score, 88)
 
     def test_exclusions_remove_jobs(self) -> None:
         results = search_jobs(

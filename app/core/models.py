@@ -375,12 +375,15 @@ class MatchResult:
     missing_required_skills: tuple[str, ...] = ()
     matched_roles: tuple[str, ...] = ()
     risks: tuple[str, ...] = ()
+    evidence_coverage: int = 0
 
     def __post_init__(self) -> None:
         if not 0 <= self.score <= 100:
             raise ValueError("score must be between 0 and 100")
         if any(not 0 <= score <= 100 for score in self.component_scores.values()):
             raise ValueError("component scores must be between 0 and 100")
+        if not 0 <= self.evidence_coverage <= 100:
+            raise ValueError("evidence_coverage must be between 0 and 100")
 
 
 @dataclass(frozen=True, slots=True)

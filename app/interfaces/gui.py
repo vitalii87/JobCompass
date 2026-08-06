@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import webbrowser
 from dataclasses import replace
+from datetime import datetime, timezone
 from pathlib import Path
 from queue import Empty, Queue
 from threading import Thread
 from tkinter import (
     BooleanVar,
+    Canvas,
     DoubleVar,
     END,
     Listbox,
@@ -80,6 +82,12 @@ _LOCATION_COUNTRIES = {
     "Усі країни": "",
 }
 
+_RESULT_SORT_OPTIONS = {
+    "За релевантністю": "relevance",
+    "Найновіші спочатку": "newest",
+    "Найстаріші спочатку": "oldest",
+}
+
 
 def _split_list(value: str) -> tuple[str, ...]:
     normalized = value.replace("\n", ",").replace(";", ",")
@@ -107,13 +115,22 @@ class JobCompassApp:
         self.location_lookup_generation = 0
         self.location_lookup_polling = False
         self.search_running = False
+        self.last_search_profile: CandidateProfile | None = None
+        self.last_search_filters: SearchFilters | None = None
+        self.last_search_jobs: list[JobPosting] = []
+        self.last_location_prefiltered_job_ids: frozenset[str] = frozenset()
+        self.source_diagnostics_prefix = "Джерела: пошук ще не запускався"
         self.empty_results_message = (
             "Немає вакансій, що відповідають вибраним фільтрам."
         )
 
         self.root.title("JobCompass")
-        self.root.geometry("1180x760")
-        self.root.minsize(960, 640)
+        screen_width = self.root.winfo_screenwidth()
+        screen_height = self.root.winfo_screenheight()
+        window_width = min(1180, max(760, screen_width - 80))
+        window_height = min(760, max(500, screen_height - 120))
+        self.root.geometry(f"{window_width}x{window_height}")
+        self.root.minsize(760, 500)
         self._configure_style()
         self._configure_clipboard_support()
 
@@ -149,6 +166,7 @@ class JobCompassApp:
         self._build_results_tab()
         self._build_applications_tab()
         self._build_settings_tab()
+        self._configure_keyboard_navigation()
         self._populate_profile(self.profile)
         self._refresh_sources()
         self._refresh_applications()
@@ -256,6 +274,101 @@ class JobCompassApp:
             88: "cut",
         }.get(getattr(event, "keycode", None))
         return self._clipboard_action(action, widget) if action else None
+
+    def _configure_keyboard_navigation(self) -> None:
+        """Make the interface usable without a mouse."""
+        self.notebook.enable_traversal()
+        self.root.bind_class(
+            "TButton", "<Return>", self._invoke_focused_button, add="+"
+        )
+        self.root.bind_class(
+            "TButton", "<KP_Enter>", self._invoke_focused_button, add="+"
+        )
+        self.root.bind("<Control-Return>", self._run_search_from_keyboard, add="+")
+        self.root.bind("<Control-KP_Enter>", self._run_search_from_keyboard, add="+")
+
+    @staticmethod
+    def _invoke_focused_button(event: object) -> str:
+        button = getattr(event, "widget", None)
+        try:
+            if button.instate(("!disabled",)):
+                button.invoke()
+        except (AttributeError, RuntimeError):
+            pass
+        return "break"
+
+    def _run_search_from_keyboard(self, _event: object) -> str:
+        if self.notebook.select() == str(self.search_tab):
+            self._run_search()
+        return "break"
+
+    def _update_search_scrollregion(self, _event: object | None = None) -> None:
+        bounds = self.search_canvas.bbox("all")
+        if bounds is not None:
+            self.search_canvas.configure(scrollregion=bounds)
+
+    def _resize_search_scroll_content(self, event: object) -> None:
+        width = int(getattr(event, "width", self.search_canvas.winfo_width()))
+        self.search_canvas.itemconfigure(self.search_canvas_window, width=width)
+        self._update_search_scrollregion()
+
+    def _pointer_is_over_search_form(self) -> bool:
+        if self.notebook.select() != str(self.search_tab):
+            return False
+        pointer_x, pointer_y = self.root.winfo_pointerxy()
+        left = self.search_canvas.winfo_rootx()
+        top = self.search_canvas.winfo_rooty()
+        return (
+            left <= pointer_x < left + self.search_canvas.winfo_width()
+            and top <= pointer_y < top + self.search_canvas.winfo_height()
+        )
+
+    def _scroll_search_with_mouse(self, event: object) -> str | None:
+        if not self._pointer_is_over_search_form():
+            return None
+        delta = int(getattr(event, "delta", 0))
+        if delta:
+            steps = max(1, abs(delta) // 120)
+            if delta > 0:
+                steps = -steps
+            self.search_canvas.yview_scroll(steps, "units")
+            return "break"
+        return None
+
+    def _scroll_search_with_keyboard(self, event: object) -> str:
+        keysym = str(getattr(event, "keysym", ""))
+        if keysym == "Home":
+            self.search_canvas.yview_moveto(0.0)
+        elif keysym == "End":
+            self.search_canvas.yview_moveto(1.0)
+        elif keysym in {"Prior", "Next"}:
+            self.search_canvas.yview_scroll(-1 if keysym == "Prior" else 1, "pages")
+        else:
+            self.search_canvas.yview_scroll(-1 if keysym == "Up" else 1, "units")
+        return "break"
+
+    def _bind_search_focus_scrolling(self, widget: object) -> None:
+        """Keep controls reached with Tab inside the visible canvas area."""
+        for child in widget.winfo_children():
+            child.bind("<FocusIn>", self._show_focused_search_control, add="+")
+            self._bind_search_focus_scrolling(child)
+
+    def _show_focused_search_control(self, event: object) -> None:
+        widget = getattr(event, "widget", None)
+        bounds = self.search_canvas.bbox("all")
+        if widget is None or bounds is None:
+            return
+        content_height = max(1, bounds[3] - bounds[1])
+        viewport_height = self.search_canvas.winfo_height()
+        visible_top = self.search_canvas.canvasy(0)
+        visible_bottom = visible_top + viewport_height
+        widget_top = widget.winfo_rooty() - self.search_content.winfo_rooty()
+        widget_bottom = widget_top + widget.winfo_height()
+        if widget_top < visible_top:
+            self.search_canvas.yview_moveto(max(0.0, widget_top / content_height))
+        elif widget_bottom > visible_bottom:
+            destination = (widget_bottom - viewport_height) / content_height
+            self.search_canvas.yview_moveto(min(1.0, max(0.0, destination)))
 
     def _build_profile_tab(self) -> None:
         self.profile_tab.columnconfigure(0, weight=1)
@@ -367,10 +480,34 @@ class JobCompassApp:
         )
         notice.grid(row=1, column=0, sticky="w", pady=(0, 10))
 
-        content = ttk.Frame(self.search_tab)
-        content.grid(row=2, column=0, sticky="nsew")
+        scroll_host = ttk.Frame(self.search_tab)
+        scroll_host.grid(row=2, column=0, sticky="nsew")
+        scroll_host.columnconfigure(0, weight=1)
+        scroll_host.rowconfigure(0, weight=1)
+
+        self.search_canvas = Canvas(
+            scroll_host,
+            highlightthickness=0,
+            borderwidth=0,
+            takefocus=True,
+        )
+        self.search_canvas.grid(row=0, column=0, sticky="nsew")
+        search_scrollbar = ttk.Scrollbar(
+            scroll_host,
+            orient="vertical",
+            command=self.search_canvas.yview,
+        )
+        search_scrollbar.grid(row=0, column=1, sticky="ns")
+        self.search_canvas.configure(yscrollcommand=search_scrollbar.set)
+
+        content = ttk.Frame(self.search_canvas)
+        self.search_content = content
+        self.search_canvas_window = self.search_canvas.create_window(
+            (0, 0), window=content, anchor="nw"
+        )
+        content.bind("<Configure>", self._update_search_scrollregion)
+        self.search_canvas.bind("<Configure>", self._resize_search_scroll_content)
         content.columnconfigure(1, weight=1)
-        content.rowconfigure(0, weight=1)
 
         self.sources_frame = ttk.LabelFrame(
             content, text="Платформи / джерела", padding=12
@@ -393,7 +530,10 @@ class JobCompassApp:
             (
                 "Бажані посади",
                 self.role_var,
-                "Через кому. Достатньо збігу хоча б з однією посадою (АБО / OR).",
+                (
+                    "Через кому; кожна повна назва — окрема альтернатива (АБО / OR). "
+                    "Пишіть «Administrative Assistant», а не «Administrative, Assistant»."
+                ),
             ),
             (
                 "Додаткові вимоги (не міста)",
@@ -527,26 +667,38 @@ class JobCompassApp:
             from_=0,
             to=100,
             variable=self.minimum_score_var,
-            command=lambda value: self.minimum_score_label.configure(
-                text=f"{round(float(value))}%"
-            ),
+            command=self._update_minimum_score,
         ).grid(row=0, column=0, sticky="ew")
         self.minimum_score_label = ttk.Label(score_frame, text="0%", width=5)
         self.minimum_score_label.grid(row=0, column=1, padx=(8, 0))
 
+        search_actions = ttk.Frame(self.search_tab)
+        search_actions.grid(row=3, column=0, sticky="ew", pady=(8, 0))
+        ttk.Label(
+            search_actions,
+            text="Ctrl+Enter — почати пошук; Enter/Space — натиснути вибрану кнопку",
+            foreground="#555555",
+        ).pack(side="left")
         self.search_button = ttk.Button(
-            filters,
+            search_actions,
             text="Знайти вакансії в інтернеті",
             command=self._run_search,
             style="Primary.TButton",
         )
-        self.search_button.grid(
-            row=7, column=1, sticky="e", padx=(12, 0), pady=(20, 0)
-        )
+        self.search_button.pack(side="right")
+
+        self.root.bind_all("<MouseWheel>", self._scroll_search_with_mouse, add="+")
+        self.search_canvas.bind("<Up>", self._scroll_search_with_keyboard)
+        self.search_canvas.bind("<Down>", self._scroll_search_with_keyboard)
+        self.search_canvas.bind("<Prior>", self._scroll_search_with_keyboard)
+        self.search_canvas.bind("<Next>", self._scroll_search_with_keyboard)
+        self.search_canvas.bind("<Home>", self._scroll_search_with_keyboard)
+        self.search_canvas.bind("<End>", self._scroll_search_with_keyboard)
+        self._bind_search_focus_scrolling(content)
 
     def _build_results_tab(self) -> None:
         self.results_tab.columnconfigure(0, weight=1)
-        self.results_tab.rowconfigure(1, weight=1)
+        self.results_tab.rowconfigure(2, weight=1)
         toolbar = ttk.Frame(self.results_tab)
         toolbar.grid(row=0, column=0, sticky="ew", pady=(0, 8))
         ttk.Label(toolbar, text="Релевантні вакансії", style="Heading.TLabel").pack(
@@ -571,19 +723,55 @@ class JobCompassApp:
             command=lambda: self._mark_selected_result(ApplicationStatus.INTERESTING),
         ).pack(side="right", padx=(0, 6))
 
+        results_info = ttk.Frame(self.results_tab)
+        results_info.grid(row=1, column=0, sticky="ew", pady=(0, 8))
+        results_info.columnconfigure(0, weight=1)
+        self.source_summary_var = StringVar(
+            value="Джерела: пошук ще не запускався"
+        )
+        ttk.Label(
+            results_info,
+            textvariable=self.source_summary_var,
+            foreground="#444444",
+            wraplength=850,
+        ).grid(row=0, column=0, sticky="ew")
+        sort_frame = ttk.Frame(results_info)
+        sort_frame.grid(row=0, column=1, sticky="e", padx=(12, 0))
+        ttk.Label(sort_frame, text="Сортування:").pack(side="left", padx=(0, 6))
+        self.result_sort_var = StringVar(value="За релевантністю")
+        result_sort_box = ttk.Combobox(
+            sort_frame,
+            textvariable=self.result_sort_var,
+            values=tuple(_RESULT_SORT_OPTIONS),
+            state="readonly",
+            width=23,
+        )
+        result_sort_box.pack(side="left")
+        result_sort_box.bind("<<ComboboxSelected>>", self._change_result_sort)
+
         panes = ttk.Panedwindow(self.results_tab, orient="vertical")
-        panes.grid(row=1, column=0, sticky="nsew")
+        panes.grid(row=2, column=0, sticky="nsew")
         table_frame = ttk.Frame(panes)
         detail_frame = ttk.LabelFrame(panes, text="Пояснення відповідності", padding=8)
         panes.add(table_frame, weight=3)
         panes.add(detail_frame, weight=2)
 
-        columns = ("score", "title", "company", "location", "source", "skills", "status")
+        columns = (
+            "score",
+            "published",
+            "title",
+            "company",
+            "location",
+            "source",
+            "skills",
+            "status",
+        )
         self.results_tree = ttk.Treeview(
             table_frame, columns=columns, show="headings", selectmode="browse"
         )
         headings = {
             "score": "Match",
+            "published": "Опубліковано",
             "title": "Вакансія",
             "company": "Компанія",
             "location": "Локація",
@@ -593,6 +781,7 @@ class JobCompassApp:
         }
         widths = {
             "score": 70,
+            "published": 105,
             "title": 220,
             "company": 160,
             "location": 130,
@@ -606,14 +795,23 @@ class JobCompassApp:
                 column,
                 width=widths[column],
                 minwidth=60,
-                anchor="center" if column in {"score", "status"} else "w",
+                anchor="center" if column in {"score", "published", "status"} else "w",
             )
+        table_frame.columnconfigure(0, weight=1)
+        table_frame.rowconfigure(0, weight=1)
         table_scroll = ttk.Scrollbar(
             table_frame, orient="vertical", command=self.results_tree.yview
         )
-        self.results_tree.configure(yscrollcommand=table_scroll.set)
-        self.results_tree.pack(side="left", fill="both", expand=True)
-        table_scroll.pack(side="right", fill="y")
+        table_horizontal_scroll = ttk.Scrollbar(
+            table_frame, orient="horizontal", command=self.results_tree.xview
+        )
+        self.results_tree.configure(
+            yscrollcommand=table_scroll.set,
+            xscrollcommand=table_horizontal_scroll.set,
+        )
+        self.results_tree.grid(row=0, column=0, sticky="nsew")
+        table_scroll.grid(row=0, column=1, sticky="ns")
+        table_horizontal_scroll.grid(row=1, column=0, sticky="ew")
         self.results_tree.bind("<<TreeviewSelect>>", self._show_result_details)
         self.results_tree.bind("<Double-1>", lambda _event: self._open_job())
         self.results_tree.tag_configure("full", background="#e4f5e9")
@@ -936,6 +1134,9 @@ class JobCompassApp:
         self.empty_results_message = "Триває новий пошук вакансій…"
         self._render_results()
         self.results_count_var.set("Пошук…")
+        self.source_summary_var.set(
+            "Джерела: виконується новий пошук; попередні результати очищено"
+        )
         self.search_button.configure(state="disabled", text="Пошук…")
         self.status_var.set(
             "Пошук у мережі: " + ", ".join(online_names) + " — зачекайте"
@@ -967,6 +1168,14 @@ class JobCompassApp:
                 continue
             jobs.extend(found)
             counts[name] = len(found)
+            partial_error = getattr(
+                self.online_sources[name], "last_partial_error", ""
+            )
+            if partial_error:
+                errors[name] = (
+                    f"Отримано часткові результати; наступні сторінки недоступні: "
+                    f"{partial_error}"
+                )
         self.search_queue.put((profile, filters, jobs, counts, errors))
 
     def _poll_search_queue(self) -> None:
@@ -987,11 +1196,11 @@ class JobCompassApp:
         counts: dict[str, int],
         errors: dict[str, str],
     ) -> None:
+        selected_online_sources = set(filters.sources) & set(self.online_sources)
         try:
             if online_jobs:
                 self.store.save_jobs(online_jobs)
             stored_jobs = self.store.list_jobs()
-            selected_online_sources = set(filters.sources) & set(self.online_sources)
             current_search_jobs = deduplicate_jobs(
                 [
                     *online_jobs,
@@ -1005,6 +1214,10 @@ class JobCompassApp:
             location_prefiltered_job_ids = frozenset(
                 job.job_id for job in online_jobs
             )
+            self.last_search_profile = profile
+            self.last_search_filters = filters
+            self.last_search_jobs = current_search_jobs
+            self.last_location_prefiltered_job_ids = location_prefiltered_job_ids
             broadly_matching = search_jobs(
                 profile,
                 current_search_jobs,
@@ -1079,6 +1292,31 @@ class JobCompassApp:
         source_summary = ", ".join(
             f"{name}: {count}" for name, count in counts.items()
         )
+        diagnostic_parts: list[str] = []
+        for name in self.online_sources:
+            if name not in selected_online_sources:
+                continue
+            if name in errors:
+                if counts.get(name, 0):
+                    diagnostic_parts.append(
+                        f"{name}: {counts[name]} (часткові результати)"
+                    )
+                else:
+                    diagnostic_parts.append(f"{name}: помилка")
+            else:
+                diagnostic_parts.append(f"{name}: {counts.get(name, 0)}")
+        self.source_diagnostics_prefix = (
+            "Отримано після фільтрів джерел: "
+            + (
+                ", ".join(diagnostic_parts)
+                if diagnostic_parts
+                else "онлайн-джерела не вибрано"
+            )
+        )
+        self.source_summary_var.set(
+            self.source_diagnostics_prefix
+            + f" | після об’єднання та фільтрів JobCompass: {len(self.ranked_jobs)}"
+        )
         self.status_var.set(
             f"Показано релевантних вакансій: {len(self.ranked_jobs)}"
             + (f" | отримано: {source_summary}" if source_summary else "")
@@ -1095,7 +1333,50 @@ class JobCompassApp:
                 self.empty_results_message,
             )
 
-    def _render_results(self) -> None:
+    @staticmethod
+    def _published_timestamp(value: datetime | None) -> float:
+        if value is None:
+            return 0.0
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=timezone.utc)
+        return value.timestamp()
+
+    @staticmethod
+    def _format_published_at(value: datetime | None) -> str:
+        if value is None:
+            return "Не вказано"
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=timezone.utc)
+        return value.astimezone().strftime("%d.%m.%Y")
+
+    def _ordered_results(self) -> list[RankedJob]:
+        mode = _RESULT_SORT_OPTIONS.get(
+            self.result_sort_var.get(), "relevance"
+        )
+        if mode == "relevance":
+            return list(self.ranked_jobs)
+
+        newest_first = mode == "newest"
+        return sorted(
+            self.ranked_jobs,
+            key=lambda item: (
+                item.job.published_at is None,
+                (
+                    -self._published_timestamp(item.job.published_at)
+                    if newest_first
+                    else self._published_timestamp(item.job.published_at)
+                ),
+                -item.match.score,
+                item.job.title.casefold(),
+            ),
+        )
+
+    def _change_result_sort(self, _event: object | None = None) -> None:
+        selection = self.results_tree.selection()
+        selected_job_id = selection[0] if selection else None
+        self._render_results(selected_job_id)
+
+    def _render_results(self, selected_job_id: str | None = None) -> None:
         self.results_tree.delete(*self.results_tree.get_children())
         self.results_count_var.set(
             f"Вакансій у списку: {len(self.ranked_jobs)}"
@@ -1104,7 +1385,8 @@ class JobCompassApp:
         applications = {
             item.job_id: item.status.value for item in self.store.list_applications()
         }
-        for ranked in self.ranked_jobs:
+        displayed_jobs = self._ordered_results()
+        for ranked in displayed_jobs:
             job = ranked.job
             result = ranked.match
             self.results_tree.insert(
@@ -1113,6 +1395,7 @@ class JobCompassApp:
                 iid=job.job_id,
                 values=(
                     f"{result.score}%",
+                    self._format_published_at(job.published_at),
                     job.title,
                     job.company,
                     (
@@ -1126,10 +1409,15 @@ class JobCompassApp:
                 ),
                 tags=(result.level.value,),
             )
-        if self.ranked_jobs:
-            first_id = self.ranked_jobs[0].job.job_id
-            self.results_tree.selection_set(first_id)
-            self.results_tree.focus(first_id)
+        if displayed_jobs:
+            active_id = (
+                selected_job_id
+                if selected_job_id in self.result_by_id
+                else displayed_jobs[0].job.job_id
+            )
+            self.results_tree.selection_set(active_id)
+            self.results_tree.focus(active_id)
+            self.results_tree.see(active_id)
             self._show_result_details()
         else:
             self._set_text(
@@ -1155,7 +1443,9 @@ class JobCompassApp:
         lines = [
             f"{job.title} — {job.company}",
             f"Релевантність: {result.score}% ({result.level.value})",
+            f"Повнота доказів для оцінювання: {result.evidence_coverage}%",
             f"Джерело: {job.source}",
+            f"Опубліковано: {self._format_published_at(job.published_at)}",
             f"Формат роботи: {_WORK_MODE_LABELS[job.work_mode.value]}",
             f"Локація: {job.location or 'не вказана'}",
         ]
@@ -1392,6 +1682,52 @@ class JobCompassApp:
         )
         if hasattr(self, "selected_locations_list"):
             self._refresh_selected_locations()
+
+    def _update_minimum_score(self, value: str) -> None:
+        threshold = round(float(value))
+        self.minimum_score_label.configure(text=f"{threshold}%")
+        if (
+            self.search_running
+            or self.last_search_profile is None
+            or self.last_search_filters is None
+        ):
+            return
+
+        filters = replace(self.last_search_filters, minimum_score=threshold)
+        matching_before_threshold = search_jobs(
+            self.last_search_profile,
+            self.last_search_jobs,
+            replace(filters, minimum_score=0),
+            location_prefiltered_job_ids=self.last_location_prefiltered_job_ids,
+        )
+        self.ranked_jobs = search_jobs(
+            self.last_search_profile,
+            self.last_search_jobs,
+            filters,
+            location_prefiltered_job_ids=self.last_location_prefiltered_job_ids,
+        )
+        self.last_search_filters = filters
+        if self.ranked_jobs:
+            self.empty_results_message = ""
+        elif matching_before_threshold:
+            maximum = max(item.match.score for item in matching_before_threshold)
+            self.empty_results_message = (
+                f"Порогом {threshold}% приховано {len(matching_before_threshold)} "
+                f"вакансій. Найвища доступна оцінка: {maximum}%."
+            )
+        else:
+            self.empty_results_message = (
+                "Останній інтернет-пошук не повернув вакансій, тому зміна порога "
+                "не може змінити список. Перевірте стан джерел над таблицею."
+            )
+        self._render_results()
+        self.source_summary_var.set(
+            self.source_diagnostics_prefix
+            + f" | при порозі {threshold}% показано: {len(self.ranked_jobs)}"
+        )
+        self.status_var.set(
+            f"Локальний поріг змінено на {threshold}% — без повторного запиту до сайтів"
+        )
 
     def _mark_selected_result(self, status: ApplicationStatus) -> None:
         ranked = self._selected_result()

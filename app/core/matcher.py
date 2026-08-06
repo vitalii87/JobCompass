@@ -191,11 +191,21 @@ class JobMatcher:
                 for name, score in raw_components.items()
             ) / active_weight
             score = round(weighted_score * 100)
+            evidence_coverage = min(100, active_weight)
+            confidence_cap = round(50 + evidence_coverage / 2)
+            if score > confidence_cap:
+                score = confidence_cap
+            if evidence_coverage < 70:
+                risks.append(
+                    "Low evidence coverage: the vacancy and profile expose only "
+                    f"{evidence_coverage}% of weighted matching data"
+                )
         else:
             score = 0
+            evidence_coverage = 0
             risks.append("Not enough structured data to calculate a match")
 
-        if score >= 75 and not has_critical_gap:
+        if score >= 75 and evidence_coverage >= 70 and not has_critical_gap:
             level = MatchLevel.FULL
         elif score >= 45:
             level = MatchLevel.PARTIAL
@@ -214,4 +224,5 @@ class JobMatcher:
             missing_required_skills=missing_required,
             matched_roles=matched_roles,
             risks=tuple(risks),
+            evidence_coverage=evidence_coverage,
         )
