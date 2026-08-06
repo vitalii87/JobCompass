@@ -5,6 +5,7 @@ from typing import Any
 
 from app.core.location import LocationSelection
 from app.sources import ArbeitnowSource, BundesagenturSource, RemotiveSource, SearchQuery
+from app.sources.http import SourceError
 
 
 class FakeClient:
@@ -61,20 +62,66 @@ class OnlineSourceTests(unittest.TestCase):
         self.assertNotIn("&lt;", jobs[0].description)
         self.assertIn("Microsoft Office", jobs[0].required_skills)
 
+    def test_arbeitnow_caches_pages_and_keeps_partial_results_on_rate_limit(self) -> None:
+        class RateLimitClient:
+            def __init__(self) -> None:
+                self.calls: list[int] = []
+
+            def get_json(
+                self,
+                _url: str,
+                params: dict[str, object] | None = None,
+                _headers: dict[str, str] | None = None,
+            ) -> dict[str, Any]:
+                page = int((params or {}).get("page", 1))
+                self.calls.append(page)
+                if page > 1:
+                    raise SourceError("Сервер повернув HTTP 429: Too Many Requests")
+                return {
+                    "data": [
+                        {
+                            "slug": "cached-office",
+                            "company_name": "Example GmbH",
+                            "title": "Office Manager",
+                            "description": "Office administration",
+                            "remote": True,
+                            "url": "https://example.test/cached-office",
+                            "location": "Remote",
+                        }
+                    ]
+                }
+
+        client = RateLimitClient()
+        source = ArbeitnowSource(client=client, max_pages=3)
+        query = SearchQuery(roles=("Office Manager",))
+
+        first = source.search(query)
+        second = source.search(query)
+
+        self.assertEqual(len(first), 1)
+        self.assertEqual(len(second), 1)
+        self.assertIn("429", source.last_partial_error)
+        self.assertEqual(client.calls.count(1), 1)
+
     def test_bundesagentur_uses_each_role_and_radius(self) -> None:
         search_response = {
-            "stellenangebote": [
+            "ergebnisliste": [
                 {
-                    "titel": "Kaufmännische Assistenz (m/w/d)",
-                    "refnr": "REF-1",
-                    "arbeitsort": {
-                        "ort": "Stuttgart",
-                        "region": "Baden-Württemberg",
-                    },
-                    "arbeitgeber": "Beispiel GmbH",
-                    "aktuelleVeroeffentlichungsdatum": "2026-08-01",
+                    "stellenangebotsTitel": "Kaufmännische Assistenz (m/w/d)",
+                    "referenznummer": "REF-1",
+                    "stellenlokationen": [
+                        {
+                            "adresse": {
+                                "ort": "Stuttgart",
+                                "region": "BADEN_WUERTTEMBERG",
+                            }
+                        }
+                    ],
+                    "firma": "Beispiel GmbH",
+                    "datumErsteVeroeffentlichung": "2026-08-01",
                 }
-            ]
+            ],
+            "maxErgebnisse": 1,
         }
         detail_response = {
             "stellenangebotsTitel": "Kaufmännische Assistenz (m/w/d)",
@@ -100,8 +147,10 @@ class OnlineSourceTests(unittest.TestCase):
         )
 
         self.assertEqual(len(jobs), 1)
+        self.assertEqual(jobs[0].location, "Stuttgart, Baden-Württemberg")
         search_calls = [call for call in client.calls if call[0].endswith("/jobs")]
         self.assertEqual(len(search_calls), 2)
+        self.assertTrue(search_calls[0][0].endswith("/pc/v6/jobs"))
         self.assertEqual(search_calls[0][1]["umkreis"], 50)
         self.assertEqual(
             {call[1]["was"] for call in search_calls},

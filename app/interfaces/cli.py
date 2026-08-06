@@ -12,6 +12,9 @@ from app.core.matcher import JobMatcher
 from app.core.models import ApplicationStatus, CandidateProfile
 from app.core.paths import default_data_path
 from app.sources import JsonFileSource, SearchQuery
+from app.services.scheduled_search import run_scheduled_search
+from app.services.windows_scheduler import sync_windows_search_task
+from app.core.profiles import SearchSchedule
 from app.storage import LocalJsonStore
 
 
@@ -56,6 +59,15 @@ def _build_parser() -> argparse.ArgumentParser:
     status_parser.add_argument("--notes")
 
     commands.add_parser("list-applications", help="list tracked applications")
+    scheduled_parser = commands.add_parser(
+        "scheduled-search", help="run due saved searches without opening the GUI"
+    )
+    scheduled_parser.add_argument("--profile-id")
+    scheduled_parser.add_argument("--force", action="store_true")
+    commands.add_parser(
+        "remove-scheduled-tasks",
+        help="remove Windows background tasks registered for stored profiles",
+    )
     return parser
 
 
@@ -150,6 +162,31 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(f"{record.job_id}: {record.status.value}")
         elif args.command == "list-applications":
             _print_applications(store)
+        elif args.command == "scheduled-search":
+            profile_ids = (
+                [args.profile_id]
+                if args.profile_id
+                else [item.profile_id for item in store.list_profiles()]
+            )
+            for profile_id in profile_ids:
+                report = run_scheduled_search(
+                    store, profile_id, force=args.force
+                )
+                if report.skipped:
+                    print(f"{profile_id}: not due")
+                else:
+                    print(
+                        f"{profile_id}: {report.matched_count} matched, "
+                        f"{report.new_count} new"
+                    )
+        elif args.command == "remove-scheduled-tasks":
+            for profile in store.list_profiles():
+                sync_windows_search_task(
+                    profile.profile_id,
+                    SearchSchedule(enabled=False),
+                    store.path,
+                )
+            print("Scheduled tasks removed.")
     except (OSError, ValueError) as error:
         print(f"error: {error}", file=sys.stderr)
         return 2

@@ -18,6 +18,7 @@ $requirements = Join-Path $projectRoot "requirements-build.txt"
 $specFile = Join-Path $projectRoot "packaging\windows\JobCompass.spec"
 $installerScript = Join-Path $projectRoot "packaging\windows\JobCompass.nsi"
 $appVersionFile = Join-Path $projectRoot "app\__init__.py"
+$windowsVersionFile = Join-Path $projectRoot "packaging\windows\version_info.txt"
 
 $versionMatch = [regex]::Match(
     (Get-Content -Raw -Encoding UTF8 $appVersionFile),
@@ -27,6 +28,18 @@ if (-not $versionMatch.Success) {
     throw "Could not read JobCompass version from app\__init__.py"
 }
 $appVersion = $versionMatch.Groups[1].Value
+$versionNumbers = $appVersion.Split(".")
+if ($versionNumbers.Count -ne 3) {
+    throw "JobCompass version must use MAJOR.MINOR.PATCH"
+}
+$expectedVersionTuple = "filevers=($($versionNumbers[0]), $($versionNumbers[1]), $($versionNumbers[2]), 0)"
+$windowsVersionContent = Get-Content -Raw -Encoding UTF8 $windowsVersionFile
+if (
+    -not $windowsVersionContent.Contains($expectedVersionTuple) -or
+    -not $windowsVersionContent.Contains("StringStruct(u'FileVersion', u'$appVersion')")
+) {
+    throw "packaging\windows\version_info.txt does not match app version $appVersion"
+}
 
 if (-not $PythonExecutable) {
     $pythonCommand = Get-Command python -ErrorAction SilentlyContinue
@@ -70,7 +83,6 @@ if (-not $SkipTests) {
 $generatedDirectories = @(
     (Join-Path $projectRoot "build"),
     (Join-Path $projectRoot "dist"),
-    (Join-Path $projectRoot "release"),
     (Join-Path $projectRoot ".portable-staging")
 )
 foreach ($directory in $generatedDirectories) {
@@ -86,7 +98,16 @@ foreach ($directory in $generatedDirectories) {
 $buildDirectory = Join-Path $projectRoot "build"
 $distDirectory = Join-Path $projectRoot "dist"
 $releaseDirectory = Join-Path $projectRoot "release"
-New-Item -ItemType Directory -Path $releaseDirectory | Out-Null
+New-Item -ItemType Directory -Path $releaseDirectory -Force | Out-Null
+$currentReleaseArtifacts = @(
+    (Join-Path $releaseDirectory "JobCompass-$appVersion-Portable.zip"),
+    (Join-Path $releaseDirectory "JobCompass-$appVersion-Setup.exe")
+)
+foreach ($artifact in $currentReleaseArtifacts) {
+    if (Test-Path -LiteralPath $artifact) {
+        Remove-Item -LiteralPath $artifact -Force
+    }
+}
 
 Write-Host "Building the Windows application..."
 & $buildPython -m PyInstaller `

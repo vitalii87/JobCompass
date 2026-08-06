@@ -136,6 +136,7 @@ def build_prompt_evidence(
     match = _non_empty_mapping(
         {
             "internal_match_score_percent": result.score,
+            "evidence_coverage_percent": result.evidence_coverage,
             "matched_roles": list(result.matched_roles),
             "confirmed_matching_skills": list(result.matched_skills),
             "missing_or_unconfirmed_required_skills": list(
@@ -162,6 +163,10 @@ def _missing_data_warnings(
         warnings.append("не визначено навички кандидата")
     if not profile.languages:
         warnings.append("не визначено мови кандидата")
+    if result.evidence_coverage < 70:
+        warnings.append(
+            "низька повнота доказів для match score — перевірте резюме й опис вакансії"
+        )
     if profile.years_experience is None:
         warnings.append("не визначено тривалість досвіду")
     if not job.description:

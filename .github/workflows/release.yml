@@ -1,0 +1,48 @@
+name: Build Windows release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Verify release version
+        shell: pwsh
+        run: |
+          $content = Get-Content -Raw -Encoding UTF8 app/__init__.py
+          $match = [regex]::Match($content, '__version__\s*=\s*"([^"]+)"')
+          if (-not $match.Success) { throw "JobCompass version was not found" }
+          $expectedTag = "v$($match.Groups[1].Value)"
+          if ($expectedTag -ne "${{ github.ref_name }}") {
+            throw "Tag ${{ github.ref_name }} does not match $expectedTag"
+          }
+
+      - name: Install NSIS
+        shell: pwsh
+        run: choco install nsis --yes --no-progress
+
+      - name: Test and build packages
+        shell: pwsh
+        run: ./scripts/build_windows.ps1 -PythonExecutable python
+
+      - name: Publish GitHub Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $assets = Get-ChildItem release -File | ForEach-Object FullName
+          gh release create "${{ github.ref_name }}" $assets --generate-notes --verify-tag

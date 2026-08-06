@@ -83,6 +83,23 @@ class JobMatcherTests(unittest.TestCase):
         self.assertEqual(result.score, 0)
         self.assertTrue(any("Not enough" in risk for risk in result.risks))
 
+    def test_role_only_match_is_capped_by_low_evidence_coverage(self) -> None:
+        profile = CandidateProfile(desired_roles=("Office Manager",))
+        job = JobPosting(
+            source="test",
+            external_id="role-only",
+            title="Office Manager",
+            company="ACME",
+        )
+
+        result = self.matcher.match(profile, job)
+
+        self.assertEqual(result.component_scores["role"], 100)
+        self.assertEqual(result.evidence_coverage, 25)
+        self.assertEqual(result.score, 62)
+        self.assertEqual(result.level, MatchLevel.PARTIAL)
+        self.assertTrue(any("Low evidence coverage" in risk for risk in result.risks))
+
 
 if __name__ == "__main__":
     unittest.main()

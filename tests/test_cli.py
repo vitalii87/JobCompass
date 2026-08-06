@@ -73,7 +73,7 @@ class CliWorkflowTests(unittest.TestCase):
 
         rendered = output.getvalue()
         self.assertIn("Imported 1 new vacancies", rendered)
-        self.assertIn("100% [full] Python Developer", rendered)
+        self.assertIn("88% [full] Python Developer", rendered)
         self.assertIn("fixture:1: Interesting", rendered)
 
 
