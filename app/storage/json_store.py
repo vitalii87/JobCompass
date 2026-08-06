@@ -16,6 +16,7 @@ from app.core.deduplication import deduplicate_jobs
 from app.core.models import (
     ApplicationEvent,
     ApplicationRecord,
+    ApplicationSubmission,
     ApplicationStatus,
     CandidateProfile,
     CoverLetterPreparation,
@@ -23,6 +24,7 @@ from app.core.models import (
     utc_now,
 )
 from app.core.profiles import ProfileSummary, SavedSearchPreferences, SearchSchedule
+from app.i18n import DEFAULT_LANGUAGE, normalize_language
 
 
 class LocalJsonStore:
@@ -42,6 +44,20 @@ class LocalJsonStore:
     @property
     def active_profile_id(self) -> str | None:
         return self._active_profile_id
+
+    def load_app_language(self) -> str:
+        settings = self._read().get("settings", {})
+        value = settings.get("language") if isinstance(settings, Mapping) else None
+        return normalize_language(value if isinstance(value, str) else None)
+
+    def save_app_language(self, language: str) -> None:
+        data = self._read()
+        settings = data.setdefault("settings", {})
+        if not isinstance(settings, dict):
+            settings = {}
+            data["settings"] = settings
+        settings["language"] = normalize_language(language)
+        self._write(data)
 
     @property
     def is_guest(self) -> bool:
@@ -455,6 +471,69 @@ class LocalJsonStore:
         self._save_active_profile_data(profile)
         return updated
 
+    def record_application_submission(
+        self,
+        job_id: str,
+        submission: ApplicationSubmission,
+        *,
+        allow_duplicate: bool = False,
+    ) -> ApplicationRecord:
+        """Atomically record a user-confirmed submission and its material snapshot."""
+
+        if self.get_job(job_id) is None:
+            raise ValueError(f"Unknown job: {job_id}")
+        profile = self._active_profile_data(self._read())
+        applications = [
+            ApplicationRecord.from_dict(item) for item in profile["applications"]
+        ]
+        current = next((item for item in applications if item.job_id == job_id), None)
+        if current is not None and current.has_submission_history and not allow_duplicate:
+            raise ValueError(
+                "Заявку на цю вакансію вже позначено як відправлену."
+            )
+
+        mode_label = {
+            "manual": "ручний",
+            "assisted": "з допомогою JobCompass",
+            "automatic": "автоматичний",
+        }[submission.mode.value]
+        material_note = (
+            f"Відправлення підтверджено; режим: {mode_label}; "
+            f"резюме: {submission.resume_name or 'не вказано'}; "
+            f"супровідний лист: {'так' if submission.cover_letter_text else 'ні'}"
+        )
+        event = ApplicationEvent(
+            status=ApplicationStatus.APPLIED,
+            occurred_at=submission.submitted_at,
+            notes=material_note,
+        )
+        if current is None:
+            updated = ApplicationRecord(
+                job_id=job_id,
+                status=ApplicationStatus.APPLIED,
+                notes=material_note,
+                created_at=submission.submitted_at,
+                updated_at=submission.submitted_at,
+                history=(event,),
+                submissions=(submission,),
+            )
+            applications.append(updated)
+        else:
+            updated = replace(
+                current,
+                status=ApplicationStatus.APPLIED,
+                notes=material_note,
+                updated_at=submission.submitted_at,
+                history=current.history + (event,),
+                submissions=current.submissions + (submission,),
+            )
+            applications = [
+                updated if item.job_id == job_id else item for item in applications
+            ]
+        profile["applications"] = [item.to_dict() for item in applications]
+        self._save_active_profile_data(profile)
+        return updated
+
     def export_profile(self, profile_id: str, path: str | Path) -> None:
         data = self._read()
         profile = data["profiles"].get(profile_id)
@@ -583,6 +662,10 @@ class LocalJsonStore:
             raise ValueError("Storage must contain a job list")
         if not isinstance(data.get("profiles"), dict):
             raise ValueError("Storage must contain a profile object")
+        settings = data.setdefault("settings", {"language": DEFAULT_LANGUAGE})
+        if not isinstance(settings, dict):
+            raise ValueError("Storage settings must be an object")
+        settings["language"] = normalize_language(settings.get("language"))
         active = data.get("active_profile_id")
         if active is not None and active not in data["profiles"]:
             data["active_profile_id"] = None
@@ -637,6 +720,7 @@ class LocalJsonStore:
         return {
             "schema_version": cls.SCHEMA_VERSION,
             "active_profile_id": None,
+            "settings": {"language": DEFAULT_LANGUAGE},
             "profiles": {},
             "jobs": [],
         }

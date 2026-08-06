@@ -34,6 +34,7 @@ from app.core.models import (
     CandidateProfile,
     CoverLetterPreparation,
     JobPosting,
+    SubmissionMode,
 )
 from app.core.location import LocationSelection
 from app.core.paths import default_data_path
@@ -53,10 +54,26 @@ from app.services import (
     download_release_asset,
     is_newer_version,
     runtime_mode,
+    SubmissionPreparationError,
+    prepare_submission,
 )
 from app import __version__
 from app.sources import JsonFileSource, ONLINE_SOURCE_TYPES, SearchQuery
 from app.storage import LocalJsonStore
+from app.i18n import (
+    LANGUAGE_LABELS,
+    LocalizedDialogProxy,
+    LocalizedStringVar,
+    get_language,
+    is_localized_variable,
+    set_language,
+    translate,
+)
+
+
+messagebox = LocalizedDialogProxy(messagebox)
+filedialog = LocalizedDialogProxy(filedialog)
+simpledialog = LocalizedDialogProxy(simpledialog)
 
 
 DEFAULT_DATA_PATH = default_data_path()
@@ -80,12 +97,18 @@ _LETTER_TONES = {
     "Професійний": "professional",
     "Теплий і особистий": "warm",
     "Лаконічний": "concise",
+    "Professional": "professional",
+    "Warm and personal": "warm",
+    "Concise": "concise",
 }
 
 _LETTER_LENGTHS = {
     "Короткий (140–180 слів)": "short",
     "Стандартний (180–250 слів)": "standard",
     "Розгорнутий (250–320 слів)": "detailed",
+    "Short (140–180 words)": "short",
+    "Standard (180–250 words)": "standard",
+    "Detailed (250–320 words)": "detailed",
 }
 
 _LOCATION_COUNTRIES = {
@@ -93,12 +116,16 @@ _LOCATION_COUNTRIES = {
     "Österreich (AT)": "AT",
     "Schweiz (CH)": "CH",
     "Усі країни": "",
+    "All countries": "",
 }
 
 _RESULT_SORT_OPTIONS = {
     "За релевантністю": "relevance",
     "Найновіші спочатку": "newest",
     "Найстаріші спочатку": "oldest",
+    "By relevance": "relevance",
+    "Newest first": "newest",
+    "Oldest first": "oldest",
 }
 
 
@@ -112,6 +139,7 @@ class JobCompassApp:
         self.root = root
         self.store = LocalJsonStore(data_path)
         self.store.initialize()
+        set_language(self.store.load_app_language())
         self.previous_profile_opened_at = (
             self.store.activate_profile(self.store.active_profile_id)
             if self.store.active_profile_id is not None
@@ -164,6 +192,9 @@ class JobCompassApp:
         self.root.minsize(760, 500)
         self._configure_style()
         self._configure_clipboard_support()
+        self.root.bind_class(
+            "Toplevel", "<Map>", self._localize_mapped_window, add="+"
+        )
 
         container = ttk.Frame(root, padding=12)
         container.pack(fill="both", expand=True)
@@ -223,7 +254,7 @@ class JobCompassApp:
         self.notebook.add(self.applications_tab, text="Мої заявки")
         self.notebook.add(self.settings_tab, text="Налаштування")
 
-        self.status_var = StringVar(value="Готово")
+        self.status_var = LocalizedStringVar(value="Готово")
         ttk.Label(container, textvariable=self.status_var, style="Status.TLabel").pack(
             fill="x", pady=(8, 0)
         )
@@ -241,6 +272,7 @@ class JobCompassApp:
         self._load_active_workspace_state()
         self._refresh_applications()
         self._refresh_unseen_jobs()
+        self._apply_language_to_widgets(self.root)
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
         self.root.after(1500, self._run_due_schedule)
         self.root.after(3500, lambda: self._start_update_check(silent=True))
@@ -256,6 +288,80 @@ class JobCompassApp:
         style.configure("Status.TLabel", padding=6, relief="sunken")
         style.configure("Treeview", rowheight=26)
         style.configure("Primary.TButton", font=("Segoe UI", 10, "bold"))
+
+    def _localize_mapped_window(self, event: object) -> None:
+        widget = getattr(event, "widget", None)
+        if widget is not None:
+            self._apply_language_to_widgets(widget)
+
+    def _apply_language_to_widgets(self, widget: object) -> None:
+        """Translate UI-owned widget chrome without touching free-form text fields."""
+
+        try:
+            if isinstance(widget, (Tk, Toplevel)):
+                widget.title(translate(widget.title()))
+        except Exception:
+            pass
+        try:
+            text = str(widget.cget("text"))
+            if text:
+                widget.configure(text=translate(text))
+        except Exception:
+            pass
+        try:
+            if (
+                isinstance(widget, ttk.Combobox)
+                and str(widget.cget("state")) == "readonly"
+                and widget is not getattr(self, "profile_selector", None)
+            ):
+                widget.configure(
+                    values=tuple(translate(value) for value in widget.cget("values"))
+                )
+                current = widget.get()
+                translated = translate(current)
+                if translated != current:
+                    widget.set(translated)
+        except Exception:
+            pass
+        try:
+            if isinstance(widget, ttk.Notebook):
+                for tab_id in widget.tabs():
+                    widget.tab(tab_id, text=translate(widget.tab(tab_id, "text")))
+        except Exception:
+            pass
+        try:
+            if isinstance(widget, ttk.Treeview):
+                for column in widget.cget("columns"):
+                    widget.heading(
+                        column, text=translate(widget.heading(column, "text"))
+                    )
+        except Exception:
+            pass
+        try:
+            if isinstance(widget, ttk.Label):
+                variable_name = str(widget.cget("textvariable"))
+                if variable_name and is_localized_variable(variable_name):
+                    current = widget.getvar(variable_name)
+                    if isinstance(current, str):
+                        widget.setvar(variable_name, translate(current))
+        except Exception:
+            pass
+        try:
+            children = widget.winfo_children()
+        except Exception:
+            children = ()
+        for child in children:
+            self._apply_language_to_widgets(child)
+        if widget is self.root:
+            try:
+                last_index = self.edit_menu.index("end")
+                if last_index is not None:
+                    for index in range(last_index + 1):
+                        label = self.edit_menu.entrycget(index, "label")
+                        if label:
+                            self.edit_menu.entryconfigure(index, label=translate(label))
+            except Exception:
+                pass
 
     def _configure_clipboard_support(self) -> None:
         self.edit_menu = Menu(self.root, tearoff=False)
@@ -745,7 +851,7 @@ class JobCompassApp:
         self._populate_profile(self.profile)
         self.current_resume_path, self.current_resume_text = self.store.load_resume_info()
         self.resume_path_var.set(
-            self.current_resume_path or "Резюме ще не завантажено"
+            self.current_resume_path or translate("Резюме ще не завантажено")
         )
         self._set_text(self.resume_preview, self.current_resume_text)
         self._apply_search_preferences(self.store.load_search_preferences())
@@ -842,7 +948,7 @@ class JobCompassApp:
         preview.grid(row=1, column=1, sticky="nsew", padx=(6, 0))
         preview.columnconfigure(0, weight=1)
         preview.rowconfigure(1, weight=1)
-        self.resume_path_var = StringVar(value="Резюме ще не завантажено")
+        self.resume_path_var = StringVar(value=translate("Резюме ще не завантажено"))
         ttk.Label(preview, textvariable=self.resume_path_var).grid(
             row=0, column=0, sticky="ew", pady=(0, 8)
         )
@@ -983,7 +1089,7 @@ class JobCompassApp:
                 country_box = ttk.Combobox(
                     location_controls,
                     textvariable=self.location_country_var,
-                    values=tuple(_LOCATION_COUNTRIES),
+                    values=tuple(list(_LOCATION_COUNTRIES)[:4]),
                     state="readonly",
                     width=19,
                 )
@@ -1012,7 +1118,7 @@ class JobCompassApp:
                     font=("Segoe UI", 9),
                 )
                 self.selected_locations_list.grid(row=4, column=0, sticky="ew")
-                self.location_lookup_status_var = StringVar(
+                self.location_lookup_status_var = LocalizedStringVar(
                     value="Почніть вводити щонайменше 2–3 літери й оберіть місто зі списку."
                 )
                 ttk.Label(
@@ -1136,7 +1242,7 @@ class JobCompassApp:
         ttk.Button(
             controls, text="Зберегти розклад", command=self._save_schedule
         ).grid(row=0, column=3, padx=(12, 0))
-        self.schedule_status_var = StringVar(value="Розклад не налаштовано")
+        self.schedule_status_var = LocalizedStringVar(value="Розклад не налаштовано")
         ttk.Label(
             controls,
             textvariable=self.schedule_status_var,
@@ -1192,7 +1298,7 @@ class JobCompassApp:
         ttk.Label(toolbar, text="Релевантні вакансії", style="Heading.TLabel").pack(
             side="left"
         )
-        self.results_count_var = StringVar(value="Вакансій у списку: 0")
+        self.results_count_var = LocalizedStringVar(value="Вакансій у списку: 0")
         ttk.Label(toolbar, textvariable=self.results_count_var).pack(
             side="left", padx=(16, 0)
         )
@@ -1214,7 +1320,7 @@ class JobCompassApp:
         results_info = ttk.Frame(self.results_tab)
         results_info.grid(row=1, column=0, sticky="ew", pady=(0, 8))
         results_info.columnconfigure(0, weight=1)
-        self.source_summary_var = StringVar(
+        self.source_summary_var = LocalizedStringVar(
             value="Джерела: пошук ще не запускався"
         )
         ttk.Label(
@@ -1230,7 +1336,7 @@ class JobCompassApp:
         result_sort_box = ttk.Combobox(
             sort_frame,
             textvariable=self.result_sort_var,
-            values=tuple(_RESULT_SORT_OPTIONS),
+            values=tuple(list(_RESULT_SORT_OPTIONS)[:3]),
             state="readonly",
             width=23,
         )
@@ -1414,10 +1520,29 @@ class JobCompassApp:
             wraplength=500,
         ).grid(row=1, column=0, sticky="w", pady=(4, 14))
 
+        language_frame = ttk.LabelFrame(
+            container, text="Мова інтерфейсу", padding=14
+        )
+        language_frame.grid(row=2, column=0, sticky="ew", pady=(0, 12))
+        self.language_var = StringVar(value=LANGUAGE_LABELS[get_language()])
+        language_box = ttk.Combobox(
+            language_frame,
+            textvariable=self.language_var,
+            values=tuple(LANGUAGE_LABELS.values()),
+            state="readonly",
+            width=18,
+        )
+        language_box.grid(row=0, column=0, sticky="w")
+        language_box.bind("<<ComboboxSelected>>", self._change_interface_language)
+        ttk.Label(
+            language_frame,
+            text="Застосовується одразу та зберігається для всіх профілів.",
+        ).grid(row=0, column=1, sticky="w", padx=(12, 0))
+
         update_frame = ttk.LabelFrame(container, text="Оновлення", padding=14)
-        update_frame.grid(row=2, column=0, sticky="ew")
+        update_frame.grid(row=3, column=0, sticky="ew")
         update_frame.columnconfigure(0, weight=1)
-        self.update_status_var = StringVar(
+        self.update_status_var = LocalizedStringVar(
             value="Перевірте, чи доступна нова версія JobCompass."
         )
         ttk.Label(
@@ -1440,12 +1565,12 @@ class JobCompassApp:
         )
         self.update_button.grid(row=2, column=0, sticky="w", pady=(12, 0))
 
-        ttk.Separator(container).grid(row=3, column=0, sticky="ew", pady=(18, 10))
+        ttk.Separator(container).grid(row=4, column=0, sticky="ew", pady=(18, 10))
         ttk.Label(
             container,
             text=f"Поточна версія: {__version__}",
             foreground="#666666",
-        ).grid(row=4, column=0, sticky="w")
+        ).grid(row=5, column=0, sticky="w")
 
         window.update_idletasks()
         left = self.root.winfo_rootx() + max(
@@ -1465,6 +1590,32 @@ class JobCompassApp:
         else:
             self.update_status_var.set("Перевіряємо наявність оновлень…")
             self.update_button.state(["disabled"])
+
+    def _change_interface_language(self, _event: object | None = None) -> None:
+        selected = self.language_var.get()
+        language = "en" if selected in {"English"} else "uk"
+        set_language(language)
+        try:
+            self.store.save_app_language(language)
+        except OSError as error:
+            messagebox.showerror(
+                "Не вдалося зберегти",
+                str(error),
+                parent=self.update_window or self.root,
+            )
+            return
+        resume_status = self.resume_path_var.get()
+        if resume_status in {
+            "Резюме ще не завантажено",
+            "No resume loaded yet",
+        }:
+            self.resume_path_var.set(translate("Резюме ще не завантажено"))
+        self._apply_language_to_widgets(self.root)
+        for child in self.root.winfo_children():
+            self._apply_language_to_widgets(child)
+        if self.update_window is not None:
+            self._apply_language_to_widgets(self.update_window)
+        self.status_var.set("Мову інтерфейсу змінено")
 
     def _close_settings_dialog(self) -> None:
         if self.update_window is not None:
@@ -1716,7 +1867,7 @@ class JobCompassApp:
             self.settings_tab, text="Керування профілями", padding=12
         )
         profile_management.grid(row=2, column=0, sticky="ew", pady=(0, 12))
-        self.profile_management_status_var = StringVar()
+        self.profile_management_status_var = LocalizedStringVar()
         ttk.Label(
             profile_management,
             textvariable=self.profile_management_status_var,
@@ -2827,6 +2978,31 @@ class JobCompassApp:
             timestamp = event.occurred_at.astimezone().strftime("%d.%m.%Y %H:%M")
             note = f" — {event.notes}" if event.notes else ""
             lines.append(f"• {timestamp}: {event.status.value}{note}")
+        if application.submissions:
+            lines.append("\nВідправлені матеріали:")
+            mode_labels = {
+                SubmissionMode.MANUAL: "ручний режим",
+                SubmissionMode.ASSISTED: "з допомогою JobCompass",
+                SubmissionMode.AUTOMATIC: "автоматичний режим",
+            }
+            for submission in application.submissions:
+                timestamp = submission.submitted_at.astimezone().strftime(
+                    "%d.%m.%Y %H:%M"
+                )
+                lines.append(
+                    f"• {timestamp}: {mode_labels[submission.mode]}"
+                )
+                lines.append(
+                    f"  Резюме: {submission.resume_name or 'не вказано'}"
+                )
+                if submission.resume_sha256:
+                    lines.append(f"  SHA-256: {submission.resume_sha256}")
+                lines.append(
+                    "  Супровідний лист: "
+                    + ("використано" if submission.cover_letter_text else "не використано")
+                )
+                if submission.destination_url:
+                    lines.append(f"  Адреса: {submission.destination_url}")
         self._set_text(self.application_history, "\n".join(lines))
 
     def _update_application_status(self) -> None:
@@ -2859,7 +3035,7 @@ class ApplicationPreparationDialog:
         self.ranked = ranked
         self.window = Toplevel(app.root)
         self.window.title("Підготовка заявки")
-        self.window.geometry("620x390")
+        self.window.geometry("620x470")
         self.window.resizable(False, False)
         self.window.transient(app.root)
         self.window.grab_set()
@@ -2882,7 +3058,10 @@ class ApplicationPreparationDialog:
             wraplength=570,
         ).pack(anchor="w", pady=(0, 14))
 
-        self.choice_var = StringVar(value="draft")
+        saved = app.store.get_cover_letter_preparation(ranked.job.job_id)
+        self.choice_var = StringVar(
+            value="saved" if saved is not None and saved.draft else "draft"
+        )
         options = (
             (
                 "draft",
@@ -2903,6 +3082,14 @@ class ApplicationPreparationDialog:
                 "Відкрити сторінку вакансії без генерації листа або промпту.",
             ),
         )
+        if saved is not None and saved.draft:
+            options = (
+                (
+                    "saved",
+                    "Використати збережений супровідний лист",
+                    "Перейти до перевірки матеріалів із раніше збереженим листом.",
+                ),
+            ) + options
         for value, title, description in options:
             option = ttk.Frame(container)
             option.pack(fill="x", pady=5)
@@ -2935,25 +3122,326 @@ class ApplicationPreparationDialog:
         choice = self.choice_var.get()
         self.window.grab_release()
         self.window.destroy()
+        if choice not in {"draft", "ai"}:
+            saved = self.app.store.get_cover_letter_preparation(
+                self.ranked.job.job_id
+            )
+            letter = saved.draft if choice == "saved" and saved is not None else ""
+            SubmissionReviewDialog(
+                self.app, self.ranked, cover_letter_text=letter
+            )
+            return
         if choice in {"draft", "ai"}:
             CoverLetterDialog(self.app, self.ranked, initial_tab=choice)
-            return
-        if not self.app._open_job_for(self.ranked.job):
-            return
-        submitted = messagebox.askyesno(
-            "Підтвердження відправлення",
-            (
-                "Сторінку вакансії відкрито у браузері.\n\n"
-                "Натисніть «Так» лише після фактичного успішного відправлення "
-                "заявки. Якщо ви ще не відправили її, натисніть «Ні»."
+
+
+class SubmissionReviewDialog:
+    """Review exact application materials before opening the external form."""
+
+    def __init__(
+        self,
+        app: JobCompassApp,
+        ranked: RankedJob,
+        *,
+        cover_letter_text: str,
+    ) -> None:
+        self.app = app
+        self.ranked = ranked
+        self.pending_submission = None
+        self.allow_duplicate = False
+        self.window = Toplevel(app.root)
+        self.window.title("Перевірка перед відправленням")
+        self.window.geometry("820x720")
+        self.window.minsize(720, 620)
+        self.window.transient(app.root)
+        self.window.grab_set()
+
+        container = ttk.Frame(self.window, padding=16)
+        container.pack(fill="both", expand=True)
+        ttk.Label(
+            container,
+            text=f"{ranked.job.title} — {ranked.job.company}",
+            style="Heading.TLabel",
+            wraplength=760,
+        ).pack(anchor="w")
+        ttk.Label(
+            container,
+            text=(
+                "Перевірте, що саме буде використано для заявки. JobCompass не "
+                "позначить її відправленою без вашого окремого підтвердження."
+            ),
+            wraplength=760,
+        ).pack(anchor="w", pady=(4, 10))
+
+        existing = app.store.get_application(ranked.job.job_id)
+        if existing is not None and existing.has_submission_history:
+            ttk.Label(
+                container,
+                text=(
+                    "⚠ На цю вакансію вже подавали заявку. Повторне відправлення "
+                    "потребуватиме додаткового підтвердження."
+                ),
+                foreground="#a33a00",
+                wraplength=760,
+            ).pack(anchor="w", pady=(0, 10))
+
+        mode_frame = ttk.LabelFrame(container, text="Режим відправлення", padding=10)
+        mode_frame.pack(fill="x", pady=(0, 10))
+        self.mode_var = StringVar(value=SubmissionMode.ASSISTED.value)
+        ttk.Radiobutton(
+            mode_frame,
+            text="З допомогою JobCompass — рекомендовано",
+            variable=self.mode_var,
+            value=SubmissionMode.ASSISTED.value,
+        ).grid(row=0, column=0, sticky="w")
+        ttk.Label(
+            mode_frame,
+            text="Лист копіюється, папка з резюме та сторінка вакансії відкриваються.",
+            foreground="#555555",
+        ).grid(row=1, column=0, sticky="w", padx=(24, 0))
+        ttk.Radiobutton(
+            mode_frame,
+            text="Ручне — лише відкрити сторінку вакансії",
+            variable=self.mode_var,
+            value=SubmissionMode.MANUAL.value,
+        ).grid(row=2, column=0, sticky="w", pady=(7, 0))
+        automatic = ttk.Radiobutton(
+            mode_frame,
+            text="Автоматичне — немає перевіреного конектора для цього джерела",
+            variable=self.mode_var,
+            value=SubmissionMode.AUTOMATIC.value,
+        )
+        automatic.grid(row=3, column=0, sticky="w", pady=(7, 0))
+        automatic.state(["disabled"])
+
+        details = ttk.LabelFrame(container, text="Матеріали заявки", padding=10)
+        details.pack(fill="both", expand=True)
+        details.columnconfigure(1, weight=1)
+        details.rowconfigure(4, weight=1)
+
+        profile = app.profile
+        ttk.Label(details, text="Контакт").grid(row=0, column=0, sticky="nw")
+        contact_parts = [
+            value
+            for value in (profile.full_name, profile.email, profile.phone)
+            if value
+        ]
+        ttk.Label(
+            details,
+            text=" · ".join(contact_parts) or "Не заповнено — введіть дані на сайті",
+            wraplength=620,
+        ).grid(row=0, column=1, columnspan=3, sticky="w", padx=(10, 0))
+
+        ttk.Label(details, text="Резюме").grid(row=1, column=0, sticky="w", pady=(10, 0))
+        self.resume_path_var = StringVar(value=app.current_resume_path)
+        ttk.Entry(
+            details, textvariable=self.resume_path_var, state="readonly"
+        ).grid(row=1, column=1, sticky="ew", padx=(10, 6), pady=(10, 0))
+        ttk.Button(details, text="Обрати…", command=self._choose_resume).grid(
+            row=1, column=2, pady=(10, 0)
+        )
+        ttk.Button(details, text="Показати файл", command=self._show_resume).grid(
+            row=1, column=3, padx=(6, 0), pady=(10, 0)
+        )
+
+        ttk.Label(
+            details,
+            text=(
+                "До форми прикріплюється оригінальний файл. Розпарсений текст "
+                "використовується лише локально й роботодавцю не надсилається."
+            ),
+            foreground="#555555",
+            wraplength=650,
+        ).grid(row=2, column=1, columnspan=3, sticky="w", padx=(10, 0), pady=(3, 8))
+
+        ttk.Label(details, text="Супровідний лист").grid(
+            row=3, column=0, columnspan=4, sticky="w"
+        )
+        letter_frame = ttk.Frame(details)
+        letter_frame.grid(row=4, column=0, columnspan=4, sticky="nsew", pady=(4, 0))
+        letter_frame.columnconfigure(0, weight=1)
+        letter_frame.rowconfigure(0, weight=1)
+        self.cover_letter_text = Text(letter_frame, height=12, wrap="word")
+        self.cover_letter_text.grid(row=0, column=0, sticky="nsew")
+        self.cover_letter_text.insert("1.0", cover_letter_text)
+        letter_scroll = ttk.Scrollbar(
+            letter_frame, orient="vertical", command=self.cover_letter_text.yview
+        )
+        letter_scroll.grid(row=0, column=1, sticky="ns")
+        self.cover_letter_text.configure(yscrollcommand=letter_scroll.set)
+
+        self.progress_var = LocalizedStringVar(value="")
+        ttk.Label(
+            container,
+            textvariable=self.progress_var,
+            foreground="#315d7d",
+            wraplength=760,
+        ).pack(anchor="w", pady=(8, 0))
+
+        buttons = ttk.Frame(container)
+        buttons.pack(fill="x", pady=(10, 0))
+        ttk.Button(buttons, text="Скасувати", command=self.window.destroy).pack(
+            side="right"
+        )
+        self.action_button = ttk.Button(
+            buttons,
+            text="Почати відправлення",
+            command=self._start_submission,
+            style="Primary.TButton",
+        )
+        self.action_button.pack(side="right", padx=(0, 8))
+        ttk.Button(
+            buttons, text="Скопіювати лист", command=self._copy_letter
+        ).pack(side="left")
+
+    def _choose_resume(self) -> None:
+        path = filedialog.askopenfilename(
+            parent=self.window,
+            title="Оберіть оригінальний файл резюме",
+            filetypes=(
+                ("Резюме", "*.pdf *.docx *.doc"),
+                ("Усі файли", "*.*"),
             ),
         )
-        if submitted:
-            self.app._set_status(
-                self.ranked.job,
-                ApplicationStatus.APPLIED,
-                "Submitted without a cover letter",
+        if path:
+            self.resume_path_var.set(str(Path(path).resolve()))
+
+    def _show_resume(self) -> bool:
+        path = Path(self.resume_path_var.get())
+        if not path.is_file():
+            messagebox.showwarning(
+                "Резюме не знайдено",
+                "Оберіть актуальний оригінальний файл резюме.",
+                parent=self.window,
             )
+            return False
+        try:
+            subprocess.Popen(["explorer.exe", f"/select,{path}"], close_fds=True)
+        except OSError as error:
+            messagebox.showerror("Не вдалося відкрити папку", str(error), parent=self.window)
+            return False
+        return True
+
+    def _copy_letter(self) -> None:
+        value = self.cover_letter_text.get("1.0", "end-1c").strip()
+        if not value:
+            self.progress_var.set("Супровідний лист порожній.")
+            return
+        self.window.clipboard_clear()
+        self.window.clipboard_append(value)
+        self.progress_var.set("Супровідний лист скопійовано в буфер обміну.")
+
+    def _confirm_duplicate(self) -> bool:
+        existing = self.app.store.get_application(self.ranked.job.job_id)
+        if existing is None or not existing.has_submission_history:
+            return True
+        proceed = messagebox.askyesno(
+            "Можлива повторна подача",
+            (
+                "На цю вакансію вже подавали заявку. Відкрити форму для "
+                "повторного відправлення все одно?"
+            ),
+            parent=self.window,
+        )
+        self.allow_duplicate = proceed
+        return proceed
+
+    def _start_submission(self) -> None:
+        mode = SubmissionMode(self.mode_var.get())
+        if mode is SubmissionMode.AUTOMATIC:
+            messagebox.showinfo(
+                "Автоматичний режим недоступний",
+                "Для цього джерела ще немає перевіреного конектора.",
+                parent=self.window,
+            )
+            return
+        if not self.ranked.job.url:
+            messagebox.showerror(
+                "Немає посилання",
+                "Вакансія не містить адреси сторінки для подачі заявки.",
+                parent=self.window,
+            )
+            return
+        if not self._confirm_duplicate():
+            return
+        if mode is SubmissionMode.ASSISTED and not self.resume_path_var.get().strip():
+            messagebox.showwarning(
+                "Оберіть резюме",
+                "Для режиму з допомогою JobCompass оберіть оригінальний PDF або DOCX.",
+                parent=self.window,
+            )
+            return
+        try:
+            self.pending_submission = prepare_submission(
+                mode=mode,
+                destination_url=self.ranked.job.url,
+                resume_path=self.resume_path_var.get(),
+                cover_letter_text=self.cover_letter_text.get("1.0", "end-1c"),
+                profile=self.app.profile,
+            )
+        except SubmissionPreparationError as error:
+            messagebox.showerror("Не вдалося підготувати заявку", str(error), parent=self.window)
+            return
+
+        if mode is SubmissionMode.ASSISTED:
+            if self.pending_submission.cover_letter_text:
+                self._copy_letter()
+            self._show_resume()
+        if not self.app._open_job_for(self.ranked.job):
+            self.pending_submission = None
+            return
+        self.progress_var.set(
+            "Сторінку вакансії відкрито. Заповніть і перевірте форму, прикріпіть "
+            "оригінальне резюме та натисніть Submit на сайті. Після успіху "
+            "поверніться сюди й підтвердьте відправлення."
+        )
+        self.action_button.configure(
+            text="Так, заявку успішно відправлено",
+            command=self._confirm_submitted,
+        )
+
+    def _confirm_submitted(self) -> None:
+        if self.pending_submission is None:
+            return
+        confirmed = messagebox.askyesno(
+            "Підтвердження відправлення",
+            (
+                "Підтверджуйте лише якщо сайт роботодавця показав, що заявку "
+                "успішно прийнято. Записати її в історію?"
+            ),
+            parent=self.window,
+        )
+        if not confirmed:
+            return
+        if self.app.store.is_guest:
+            if not messagebox.askyesno(
+                "Потрібен профіль",
+                "Створити профіль, щоб зберегти заявку та її матеріали?",
+                parent=self.window,
+            ) or not self.app._create_profile():
+                return
+        try:
+            confirmed_submission = replace(
+                self.pending_submission,
+                submitted_at=datetime.now(timezone.utc),
+            )
+            self.app.store.record_application_submission(
+                self.ranked.job.job_id,
+                confirmed_submission,
+                allow_duplicate=self.allow_duplicate,
+            )
+        except (OSError, ValueError) as error:
+            messagebox.showerror(
+                "Не вдалося зберегти відправлення", str(error), parent=self.window
+            )
+            return
+        self.app._render_results()
+        self.app._refresh_applications()
+        self.app.status_var.set(
+            f"Заявку підтверджено й записано: {self.ranked.job.title}"
+        )
+        self.window.grab_release()
+        self.window.destroy()
 
 
 class CoverLetterDialog:
@@ -3027,7 +3515,7 @@ class CoverLetterDialog:
         ttk.Combobox(
             options_frame,
             textvariable=self.letter_tone_var,
-            values=tuple(_LETTER_TONES),
+            values=tuple(list(_LETTER_TONES)[:3]),
             state="readonly",
             width=20,
         ).grid(row=0, column=4, sticky="w", padx=(6, 16))
@@ -3045,7 +3533,7 @@ class CoverLetterDialog:
         ttk.Combobox(
             options_frame,
             textvariable=self.letter_length_var,
-            values=tuple(_LETTER_LENGTHS),
+            values=tuple(list(_LETTER_LENGTHS)[:3]),
             state="readonly",
             width=26,
         ).grid(row=0, column=6, sticky="e", padx=(6, 0))
@@ -3129,7 +3617,7 @@ class CoverLetterDialog:
         ).pack(side="right")
         ttk.Button(
             buttons,
-            text="Підтвердити відправлення",
+            text="Перейти до відправлення",
             command=self._confirm_submitted,
             style="Primary.TButton",
         ).pack(side="right", padx=(0, 6))
@@ -3148,6 +3636,7 @@ class CoverLetterDialog:
     def _selected_language(self) -> str:
         return {
             "Автоматично": "auto",
+            "Automatic": "auto",
             "Deutsch": "de",
             "English": "en",
         }[self.letter_language_var.get()]
@@ -3241,21 +3730,15 @@ class CoverLetterDialog:
             self.window.destroy()
 
     def _confirm_submitted(self) -> None:
-        confirmed = messagebox.askyesno(
-            "Підтвердження відправлення",
-            (
-                "Підтверджуєте, що заявка на цю вакансію фактично й успішно "
-                "відправлена?"
-            ),
+        if not self._save_preparation(show_confirmation=False):
+            return
+        letter = self.draft_text.get("1.0", "end-1c")
+        self.window.destroy()
+        SubmissionReviewDialog(
+            self.app,
+            self.ranked,
+            cover_letter_text=letter,
         )
-        if confirmed and self._save_preparation(
-            show_confirmation=False
-        ) and self.app._set_status(
-            self.ranked.job,
-            ApplicationStatus.APPLIED,
-            "Application submitted after cover-letter preparation",
-        ):
-            self.window.destroy()
 
 
 def launch_gui(data_path: str | Path = DEFAULT_DATA_PATH) -> int:

@@ -6,14 +6,26 @@ from pathlib import Path
 
 from app.core.models import (
     ApplicationStatus,
+    ApplicationSubmission,
     CandidateProfile,
     CoverLetterPreparation,
     JobPosting,
+    SubmissionMode,
 )
 from app.storage import LocalJsonStore
 
 
 class LocalJsonStoreTests(unittest.TestCase):
+    def test_global_interface_language_survives_reload(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "jobcompass.json"
+            store = LocalJsonStore(path)
+            store.initialize()
+
+            store.save_app_language("en")
+
+            self.assertEqual(LocalJsonStore(path).load_app_language(), "en")
+
     def test_jobs_and_application_status_survive_reload(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "jobcompass.json"
@@ -93,6 +105,34 @@ class LocalJsonStoreTests(unittest.TestCase):
             reloaded = LocalJsonStore(path).get_cover_letter_preparation(job.job_id)
 
             self.assertEqual(reloaded, preparation)
+
+    def test_confirmed_submission_records_materials_and_blocks_duplicates(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "jobcompass.json"
+            store = LocalJsonStore(path)
+            store.create_profile("Vitalii")
+            job = JobPosting(
+                source="test", external_id="submit", title="PMO", company="ACME"
+            )
+            store.save_jobs([job])
+            submission = ApplicationSubmission(
+                mode=SubmissionMode.ASSISTED,
+                destination_url="https://example.test/job",
+                resume_name="resume.pdf",
+                resume_sha256="b" * 64,
+                cover_letter_text="Letter",
+            )
+
+            record = store.record_application_submission(job.job_id, submission)
+
+            self.assertEqual(record.status, ApplicationStatus.APPLIED)
+            self.assertEqual(record.submissions, (submission,))
+            with self.assertRaises(ValueError):
+                store.record_application_submission(job.job_id, submission)
+            duplicate = store.record_application_submission(
+                job.job_id, submission, allow_duplicate=True
+            )
+            self.assertEqual(len(duplicate.submissions), 2)
 
 
 if __name__ == "__main__":

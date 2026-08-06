@@ -19,6 +19,11 @@ from app.services.update import (
     is_newer_version,
     runtime_mode,
 )
+from app.services.submission import (
+    SubmissionPreparationError,
+    prepare_submission,
+    resume_sha256,
+)
 
 __all__ = [
     "ResumeLoadResult",
@@ -37,4 +42,7 @@ __all__ = [
     "download_release_asset",
     "is_newer_version",
     "runtime_mode",
+    "SubmissionPreparationError",
+    "prepare_submission",
+    "resume_sha256",
 ]
