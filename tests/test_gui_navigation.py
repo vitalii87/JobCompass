@@ -97,6 +97,16 @@ class GuiNavigationTests(unittest.TestCase):
             ["new", "old", "unknown"],
         )
 
+    def test_view_label_keeps_date_for_opened_job(self) -> None:
+        self.assertEqual(JobCompassApp._job_view_label(None), "Нова")
+        expected = datetime.fromisoformat(
+            "2026-08-06T20:15:00+00:00"
+        ).astimezone().strftime("%d.%m.%Y %H:%M")
+        self.assertEqual(
+            JobCompassApp._job_view_label("2026-08-06T20:15:00+00:00"),
+            f"Переглянуто · {expected}",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

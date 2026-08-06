@@ -66,6 +66,8 @@ from app.i18n import (
     LocalizedStringVar,
     get_language,
     is_localized_variable,
+    language_from_label,
+    language_label,
     set_language,
     translate,
 )
@@ -100,6 +102,9 @@ _LETTER_TONES = {
     "Professional": "professional",
     "Warm and personal": "warm",
     "Concise": "concise",
+    "Professionell": "professional",
+    "Warm und persönlich": "warm",
+    "Prägnant": "concise",
 }
 
 _LETTER_LENGTHS = {
@@ -109,6 +114,9 @@ _LETTER_LENGTHS = {
     "Short (140–180 words)": "short",
     "Standard (180–250 words)": "standard",
     "Detailed (250–320 words)": "detailed",
+    "Kurz (140–180 Wörter)": "short",
+    "Standard (180–250 Wörter)": "standard",
+    "Ausführlich (250–320 Wörter)": "detailed",
 }
 
 _LOCATION_COUNTRIES = {
@@ -117,6 +125,7 @@ _LOCATION_COUNTRIES = {
     "Schweiz (CH)": "CH",
     "Усі країни": "",
     "All countries": "",
+    "Alle Länder": "",
 }
 
 _RESULT_SORT_OPTIONS = {
@@ -126,6 +135,9 @@ _RESULT_SORT_OPTIONS = {
     "By relevance": "relevance",
     "Newest first": "newest",
     "Oldest first": "oldest",
+    "Nach Relevanz": "relevance",
+    "Neueste zuerst": "newest",
+    "Älteste zuerst": "oldest",
 }
 
 
@@ -1260,13 +1272,20 @@ class JobCompassApp:
 
         list_frame = ttk.LabelFrame(
             self.schedule_tab,
-            text="Нові та ще не переглянуті вакансії",
+            text="Вакансії за розкладом",
             padding=8,
         )
         list_frame.grid(row=2, column=0, sticky="nsew")
         list_frame.columnconfigure(0, weight=1)
         list_frame.rowconfigure(0, weight=1)
-        columns = ("published", "title", "company", "location", "source")
+        columns = (
+            "published",
+            "title",
+            "company",
+            "location",
+            "source",
+            "viewed",
+        )
         self.unseen_tree = ttk.Treeview(
             list_frame, columns=columns, show="headings", selectmode="browse"
         )
@@ -1276,6 +1295,7 @@ class JobCompassApp:
             ("company", "Компанія", 200),
             ("location", "Локація", 190),
             ("source", "Джерело", 130),
+            ("viewed", "Перегляд", 175),
         ):
             self.unseen_tree.heading(column, text=label)
             self.unseen_tree.column(column, width=width, minwidth=80)
@@ -1358,6 +1378,7 @@ class JobCompassApp:
             "location",
             "source",
             "skills",
+            "viewed",
             "status",
         )
         self.results_tree = ttk.Treeview(
@@ -1371,6 +1392,7 @@ class JobCompassApp:
             "location": "Локація",
             "source": "Джерело",
             "skills": "Ключові збіги",
+            "viewed": "Перегляд",
             "status": "Статус",
         }
         widths = {
@@ -1381,6 +1403,7 @@ class JobCompassApp:
             "location": 130,
             "source": 100,
             "skills": 220,
+            "viewed": 160,
             "status": 90,
         }
         for column in columns:
@@ -1389,7 +1412,11 @@ class JobCompassApp:
                 column,
                 width=widths[column],
                 minwidth=60,
-                anchor="center" if column in {"score", "published", "status"} else "w",
+                anchor=(
+                    "center"
+                    if column in {"score", "published", "viewed", "status"}
+                    else "w"
+                ),
             )
         table_frame.columnconfigure(0, weight=1)
         table_frame.rowconfigure(0, weight=1)
@@ -1524,11 +1551,11 @@ class JobCompassApp:
             container, text="Мова інтерфейсу", padding=14
         )
         language_frame.grid(row=2, column=0, sticky="ew", pady=(0, 12))
-        self.language_var = StringVar(value=LANGUAGE_LABELS[get_language()])
+        self.language_var = StringVar(value=language_label(get_language()))
         language_box = ttk.Combobox(
             language_frame,
             textvariable=self.language_var,
-            values=tuple(LANGUAGE_LABELS.values()),
+            values=tuple(language_label(code) for code in LANGUAGE_LABELS),
             state="readonly",
             width=18,
         )
@@ -1593,7 +1620,7 @@ class JobCompassApp:
 
     def _change_interface_language(self, _event: object | None = None) -> None:
         selected = self.language_var.get()
-        language = "en" if selected in {"English"} else "uk"
+        language = language_from_label(selected)
         set_language(language)
         try:
             self.store.save_app_language(language)
@@ -1608,6 +1635,7 @@ class JobCompassApp:
         if resume_status in {
             "Резюме ще не завантажено",
             "No resume loaded yet",
+            "Noch kein Lebenslauf geladen",
         }:
             self.resume_path_var.set(translate("Резюме ще не завантажено"))
         self._apply_language_to_widgets(self.root)
@@ -1615,6 +1643,12 @@ class JobCompassApp:
             self._apply_language_to_widgets(child)
         if self.update_window is not None:
             self._apply_language_to_widgets(self.update_window)
+        selected_results = self.results_tree.selection()
+        selected_job_id = selected_results[0] if selected_results else None
+        self._render_results(selected_job_id=selected_job_id)
+        self._refresh_unseen_jobs()
+        self._refresh_applications()
+        self.language_var.set(language_label(language))
         self.status_var.set("Мову інтерфейсу змінено")
 
     def _close_settings_dialog(self) -> None:
@@ -2377,10 +2411,23 @@ class JobCompassApp:
     @staticmethod
     def _format_published_at(value: datetime | None) -> str:
         if value is None:
-            return "Не вказано"
+            return translate("Не вказано")
         if value.tzinfo is None:
             value = value.replace(tzinfo=timezone.utc)
         return value.astimezone().strftime("%d.%m.%Y")
+
+    @staticmethod
+    def _job_view_label(seen_at: object) -> str:
+        if not isinstance(seen_at, str) or not seen_at:
+            return translate("Нова")
+        try:
+            value = datetime.fromisoformat(seen_at)
+        except ValueError:
+            return translate("Переглянуто")
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=timezone.utc)
+        local_time = value.astimezone().strftime("%d.%m.%Y %H:%M")
+        return f"{translate('Переглянуто')} · {local_time}"
 
     def _ordered_results(self) -> list[RankedJob]:
         mode = _RESULT_SORT_OPTIONS.get(
@@ -2418,10 +2465,14 @@ class JobCompassApp:
         applications = {
             item.job_id: item.status.value for item in self.store.list_applications()
         }
+        job_states = {
+            job.job_id: state for job, state in self.store.list_discovered_jobs()
+        }
         displayed_jobs = self._ordered_results()
         for ranked in displayed_jobs:
             job = ranked.job
             result = ranked.match
+            job_state = job_states.get(job.job_id, {})
             self.results_tree.insert(
                 "",
                 END,
@@ -2438,6 +2489,7 @@ class JobCompassApp:
                     ),
                     job.source,
                     ", ".join(result.matched_skills[:4]),
+                    self._job_view_label(job_state.get("seen_at")),
                     applications.get(job.job_id, ApplicationStatus.FOUND.value),
                 ),
                 tags=(result.level.value,),
@@ -2473,38 +2525,61 @@ class JobCompassApp:
         if ranked is None:
             return
         job, result = ranked.job, ranked.match
+        job_state = self.store.get_job_state(job.job_id)
         lines = [
             f"{job.title} — {job.company}",
-            f"Релевантність: {result.score}% ({result.level.value})",
-            f"Повнота доказів для оцінювання: {result.evidence_coverage}%",
-            f"Джерело: {job.source}",
-            f"Опубліковано: {self._format_published_at(job.published_at)}",
-            f"Формат роботи: {_WORK_MODE_LABELS[job.work_mode.value]}",
-            f"Локація: {job.location or 'не вказана'}",
+            (
+                f"{translate('Релевантність: ')}{result.score}% "
+                f"({translate(result.level.value)})"
+            ),
+            (
+                f"{translate('Повнота доказів для оцінювання: ')}"
+                f"{result.evidence_coverage}%"
+            ),
+            f"{translate('Джерело')}: {job.source}",
+            (
+                f"{translate('Опубліковано')}: "
+                f"{self._format_published_at(job.published_at)}"
+            ),
+            (
+                f"{translate('Формат роботи: ')}"
+                f"{translate(_WORK_MODE_LABELS[job.work_mode.value])}"
+            ),
+            f"{translate('Локація')}: {job.location or translate('не вказана')}",
+            (
+                f"{translate('Перегляд')}: "
+                f"{self._job_view_label(job_state.get('seen_at'))}"
+            ),
         ]
         if job.url:
-            lines.append(f"Посилання: {job.url}")
-        lines.append("\nКомпоненти оцінювання:")
+            lines.append(f"{translate('Посилання')}: {job.url}")
+        lines.append("\n" + translate("Компоненти оцінювання:"))
         for name, score in result.component_scores.items():
-            lines.append(f"• {_COMPONENT_LABELS.get(name, name)}: {score}%")
+            label = translate(_COMPONENT_LABELS.get(name, name))
+            lines.append(f"• {label}: {score}%")
         if result.matched_skills:
-            lines.append("\nЗбігаються: " + ", ".join(result.matched_skills))
+            lines.append(
+                "\n"
+                + translate("Збігаються: ")
+                + ", ".join(result.matched_skills)
+            )
         if result.missing_required_skills:
             lines.append(
-                "Бракує обов’язкових: "
+                translate("Бракує обов’язкових: ")
                 + ", ".join(result.missing_required_skills)
             )
         if result.risks:
-            lines.append("\nРизики:")
-            lines.extend(f"• {risk}" for risk in result.risks)
+            lines.append("\n" + translate("Ризики:"))
+            lines.extend(f"• {translate(risk)}" for risk in result.risks)
         if job.requirement_evidence:
-            lines.append("\nДокази з тексту вакансії:")
+            lines.append("\n" + translate("Докази з тексту вакансії:"))
             lines.extend(
-                f"• [{item.classification}] {item.value}: “{item.excerpt}”"
+                f"• [{translate(item.classification)}] "
+                f"{item.value}: “{item.excerpt}”"
                 for item in job.requirement_evidence
             )
         if job.description:
-            lines.append("\nОпис:\n" + job.description)
+            lines.append("\n" + translate("Опис:") + "\n" + job.description)
         self._set_text(self.result_details, "\n".join(lines))
 
     def _load_schedule_controls(self) -> None:
@@ -2600,8 +2675,9 @@ class JobCompassApp:
         if not hasattr(self, "unseen_tree"):
             return
         self.unseen_tree.delete(*self.unseen_tree.get_children())
-        unseen = self.store.list_unseen_jobs()
-        for job in unseen:
+        discovered = self.store.list_discovered_jobs()
+        unseen_count = sum(not state.get("seen_at") for _, state in discovered)
+        for job, state in discovered:
             self.unseen_tree.insert(
                 "",
                 END,
@@ -2612,10 +2688,11 @@ class JobCompassApp:
                     job.company,
                     job.location,
                     job.source,
+                    self._job_view_label(state.get("seen_at")),
                 ),
             )
         self.notebook.tab(
-            self.schedule_tab, text=f"За розкладом ({len(unseen)})"
+            self.schedule_tab, text=f"За розкладом ({unseen_count})"
         )
 
     def _open_unseen_job(self) -> None:
@@ -2624,8 +2701,8 @@ class JobCompassApp:
             messagebox.showwarning("JobCompass", "Виберіть вакансію зі списку.")
             return
         job = self.store.get_job(selection[0])
-        if job is not None and self._open_job_for(job):
-            self._refresh_unseen_jobs()
+        if job is not None:
+            self._open_job_for(job)
 
     def _mark_all_unseen_viewed(self) -> None:
         self.store.mark_all_jobs_seen()
@@ -2645,6 +2722,8 @@ class JobCompassApp:
         webbrowser.open(job.url)
         self.store.mark_job_seen(job.job_id)
         self._refresh_unseen_jobs()
+        if job.job_id in self.result_by_id:
+            self._render_results(selected_job_id=job.job_id)
         return True
 
     def _prepare_application(self) -> None:
@@ -3637,8 +3716,10 @@ class CoverLetterDialog:
         return {
             "Автоматично": "auto",
             "Automatic": "auto",
+            "Automatisch": "auto",
             "Deutsch": "de",
             "English": "en",
+            "Englisch": "en",
         }[self.letter_language_var.get()]
 
     def _selected_tone(self) -> str:

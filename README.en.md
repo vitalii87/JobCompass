@@ -10,7 +10,7 @@ uses the standard library plus the local PDF parser `pypdf`.
 ## Current features
 
 - Windows desktop interface built with `Tkinter/ttk`;
-- Ukrainian and English interface selectable in Settings;
+- Ukrainian, English, and German interface selectable in Settings;
 - local resume loading from JSON, TXT, DOCX, and text-based PDF files;
 - explainable 0–100% matching with evidence-coverage information;
 - online search through Bundesagentur für Arbeit, Arbeitnow, and Remotive;
@@ -19,6 +19,8 @@ uses the standard library plus the local PDF parser `pypdf`.
   favorites, application history, and cover-letter materials;
 - temporary guest mode;
 - daily scheduled searches and new-job tracking;
+- scheduled jobs remain in the list after opening and show a profile-specific
+  `New` or dated `Viewed` status;
 - statuses `Found`, `Interesting`, `Draft`, `Applied`, `Rejected`, `Interview`,
   `Offer`, and `Archived`;
 - vacancy-specific local cover-letter drafts and grounded prompts for external AI;
@@ -32,8 +34,8 @@ uses the standard library plus the local PDF parser `pypdf`.
 Release packages are available on the
 [GitHub Releases page](https://github.com/vitalii87/JobCompass/releases):
 
-- `JobCompass-0.10.0-Setup.exe` — per-user installer for Windows 10/11 x64;
-- `JobCompass-0.10.0-Portable.zip` — portable package;
+- `JobCompass-0.10.1-Setup.exe` — per-user installer for Windows 10/11 x64;
+- `JobCompass-0.10.1-Portable.zip` — portable package;
 - `SHA256SUMS.txt` — integrity checksums.
 
 The installer does not require administrator rights. It creates Start Menu and
@@ -74,7 +76,7 @@ Alternatively, on Windows run `run_jobcompass.bat`.
 
 ## Interface language
 
-Open the gear button `⚙`, select **Ukrainian** or **English**, and the interface
+Open the gear button `⚙`, select **Ukrainian**, **English**, or **German**, and the interface
 updates immediately. The choice is global, is shared by all candidate profiles,
 and is restored the next time JobCompass starts. Resume text, candidate-entered
 content, city names, and cover letters are never translated automatically.

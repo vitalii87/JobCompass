@@ -3,7 +3,7 @@ Unicode True
 !include "MUI2.nsh"
 
 !ifndef APP_VERSION
-  !define APP_VERSION "0.10.0"
+  !define APP_VERSION "0.10.1"
 !endif
 
 !define APP_NAME "JobCompass"
@@ -31,7 +31,7 @@ VIAddVersionKey /LANG=1033 "LegalCopyright" "Copyright 2026 JobCompass contribut
 
 !define MUI_ABORTWARNING
 !define MUI_FINISHPAGE_RUN "$INSTDIR\${APP_EXE}"
-!define MUI_FINISHPAGE_RUN_TEXT "Запустити JobCompass"
+!define MUI_FINISHPAGE_RUN_TEXT "Launch JobCompass"
 
 !insertmacro MUI_PAGE_WELCOME
 !insertmacro MUI_PAGE_DIRECTORY
@@ -55,7 +55,7 @@ Section "JobCompass" MainSection
   WriteUninstaller "$INSTDIR\Uninstall.exe"
   CreateDirectory "$SMPROGRAMS\JobCompass"
   CreateShortcut "$SMPROGRAMS\JobCompass\JobCompass.lnk" "$INSTDIR\${APP_EXE}"
-  CreateShortcut "$SMPROGRAMS\JobCompass\Видалити JobCompass.lnk" "$INSTDIR\Uninstall.exe"
+  CreateShortcut "$SMPROGRAMS\JobCompass\Uninstall JobCompass.lnk" "$INSTDIR\Uninstall.exe"
   CreateShortcut "$DESKTOP\JobCompass.lnk" "$INSTDIR\${APP_EXE}"
 
   WriteRegStr HKCU "Software\JobCompass" "InstallDir" "$INSTDIR"
@@ -74,7 +74,7 @@ Section "Uninstall"
   nsExec::ExecToLog '"$INSTDIR\${APP_EXE}" --data "$LOCALAPPDATA\JobCompass\data\jobcompass.json" remove-scheduled-tasks'
   Delete "$DESKTOP\JobCompass.lnk"
   Delete "$SMPROGRAMS\JobCompass\JobCompass.lnk"
-  Delete "$SMPROGRAMS\JobCompass\Видалити JobCompass.lnk"
+  Delete "$SMPROGRAMS\JobCompass\Uninstall JobCompass.lnk"
   RMDir "$SMPROGRAMS\JobCompass"
 
   DeleteRegKey HKCU "${UNINSTALL_KEY}"
