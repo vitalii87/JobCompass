@@ -34,8 +34,8 @@ uses the standard library plus the local PDF parser `pypdf`.
 Release packages are available on the
 [GitHub Releases page](https://github.com/vitalii87/JobCompass/releases):
 
-- `JobCompass-0.10.1-Setup.exe` — per-user installer for Windows 10/11 x64;
-- `JobCompass-0.10.1-Portable.zip` — portable package;
+- `JobCompass-0.10.2-Setup.exe` — per-user installer for Windows 10/11 x64;
+- `JobCompass-0.10.2-Portable.zip` — portable package;
 - `SHA256SUMS.txt` — integrity checksums.
 
 The installer does not require administrator rights. It creates Start Menu and

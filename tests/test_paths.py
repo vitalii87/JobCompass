@@ -40,7 +40,10 @@ class RuntimePathTests(unittest.TestCase):
                 frozen=True,
             )
 
-            self.assertEqual(path, app_directory / "data" / "jobcompass.json")
+            self.assertEqual(
+                path,
+                app_directory.resolve() / "data" / "jobcompass.json",
+            )
 
     def test_environment_override_has_highest_priority(self) -> None:
         path = default_data_path(
