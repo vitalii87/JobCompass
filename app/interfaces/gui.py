@@ -563,7 +563,7 @@ class JobCompassApp:
             self.search_canvas.yview_moveto(min(1.0, max(0.0, destination)))
 
     def _refresh_profile_selector(self) -> None:
-        guest_label = "Гостьовий режим (без збереження)"
+        guest_label = translate("Гостьовий режим (без збереження)")
         self.profile_display_to_id = {guest_label: None}
         for item in self.store.list_profiles():
             self.profile_display_to_id[item.name] = item.profile_id
@@ -1645,6 +1645,7 @@ class JobCompassApp:
             self._apply_language_to_widgets(self.update_window)
         selected_results = self.results_tree.selection()
         selected_job_id = selected_results[0] if selected_results else None
+        self._refresh_profile_selector()
         self._render_results(selected_job_id=selected_job_id)
         self._refresh_unseen_jobs()
         self._refresh_applications()
@@ -1704,7 +1705,7 @@ class JobCompassApp:
         if outcome == "error":
             if self.update_status_var is not None:
                 self.update_status_var.set(f"Не вдалося перевірити оновлення: {payload}")
-                self.update_button.configure(text="Спробувати ще раз")
+                self.update_button.configure(text=translate("Спробувати ще раз"))
             elif not silent:
                 messagebox.showerror("Оновлення", str(payload), parent=self.root)
             return
@@ -1730,7 +1731,7 @@ class JobCompassApp:
             if len(notes) > 700:
                 notes = notes[:697].rstrip() + "…"
             self.update_notes_var.set(
-                f"Що змінило:\n{notes}" if notes else ""
+                translate("Що змінило:\n") + notes if notes else ""
             )
             mode = runtime_mode()
             label = {
@@ -1738,13 +1739,13 @@ class JobCompassApp:
                 "portable": "Завантажити portable-версію",
                 "source": "Відкрити сторінку оновлення",
             }[mode]
-            self.update_button.configure(text=label)
+            self.update_button.configure(text=translate(label))
         else:
             self.update_status_var.set(
                 f"У вас актуальна версія JobCompass {__version__}."
             )
             self.update_notes_var.set("")
-            self.update_button.configure(text="Перевірити ще раз")
+            self.update_button.configure(text=translate("Перевірити ще раз"))
 
     def _download_or_open_update(self, release: ReleaseInfo) -> None:
         mode = runtime_mode()
@@ -2192,7 +2193,7 @@ class JobCompassApp:
         self.source_summary_var.set(
             "Джерела: виконується новий пошук; попередні результати очищено"
         )
-        self.search_button.configure(state="disabled", text="Пошук…")
+        self.search_button.configure(state="disabled", text=translate("Пошук…"))
         self.status_var.set(
             "Пошук у мережі: " + ", ".join(online_names) + " — зачекайте"
         )
@@ -2347,7 +2348,7 @@ class JobCompassApp:
             was_scheduled = self.scheduled_search_running
             self.scheduled_search_running = False
             self.search_button.configure(
-                state="normal", text="Знайти вакансії в інтернеті"
+                state="normal", text=translate("Знайти вакансії в інтернеті")
             )
 
         self.profile = profile
@@ -2483,9 +2484,9 @@ class JobCompassApp:
                     job.title,
                     job.company,
                     (
-                        f"{_WORK_MODE_LABELS[job.work_mode.value]} · {job.location}"
+                        f"{translate(_WORK_MODE_LABELS[job.work_mode.value])} · {job.location}"
                         if job.location
-                        else _WORK_MODE_LABELS[job.work_mode.value]
+                        else translate(_WORK_MODE_LABELS[job.work_mode.value])
                     ),
                     job.source,
                     ", ".join(result.matched_skills[:4]),
@@ -2507,7 +2508,7 @@ class JobCompassApp:
         else:
             self._set_text(
                 self.result_details,
-                self.empty_results_message,
+                translate(self.empty_results_message),
             )
 
     def _selected_result(self) -> RankedJob | None:
@@ -2692,7 +2693,7 @@ class JobCompassApp:
                 ),
             )
         self.notebook.tab(
-            self.schedule_tab, text=f"За розкладом ({unseen_count})"
+            self.schedule_tab, text=translate(f"За розкладом ({unseen_count})")
         )
 
     def _open_unseen_job(self) -> None:
@@ -2917,7 +2918,7 @@ class JobCompassApp:
     def _refresh_selected_locations(self) -> None:
         self.selected_locations_list.delete(0, END)
         radius = round(self.location_radius_var.get())
-        radius_label = "без радіуса" if radius < 1 else f"+{radius} km"
+        radius_label = translate("без радіуса") if radius < 1 else f"+{radius} km"
         for selection in self.selected_locations:
             self.selected_locations_list.insert(
                 END, f"{selection.display_name}  ·  {radius_label}"
@@ -2926,7 +2927,7 @@ class JobCompassApp:
     def _update_radius_label(self, value: str) -> None:
         radius = round(float(value))
         self.location_radius_label.configure(
-            text="Без радіуса" if radius < 1 else f"+{radius} km"
+            text=translate("Без радіуса") if radius < 1 else f"+{radius} km"
         )
         if hasattr(self, "selected_locations_list"):
             self._refresh_selected_locations()
@@ -3049,16 +3050,16 @@ class JobCompassApp:
         application = self.store.get_application(selection[0])
         if application is None:
             return
-        lines = [f"Поточний статус: {application.status.value}"]
+        lines = [f"{translate('Поточний статус: ')}{application.status.value}"]
         if application.notes:
-            lines.append(f"Нотатка: {application.notes}")
-        lines.append("\nПодії:")
+            lines.append(f"{translate('Нотатка: ')}{application.notes}")
+        lines.append(translate("\nПодії:"))
         for event in application.history:
             timestamp = event.occurred_at.astimezone().strftime("%d.%m.%Y %H:%M")
             note = f" — {event.notes}" if event.notes else ""
             lines.append(f"• {timestamp}: {event.status.value}{note}")
         if application.submissions:
-            lines.append("\nВідправлені матеріали:")
+            lines.append(translate("\nВідправлені матеріали:"))
             mode_labels = {
                 SubmissionMode.MANUAL: "ручний режим",
                 SubmissionMode.ASSISTED: "з допомогою JobCompass",
@@ -3069,19 +3070,26 @@ class JobCompassApp:
                     "%d.%m.%Y %H:%M"
                 )
                 lines.append(
-                    f"• {timestamp}: {mode_labels[submission.mode]}"
+                    f"• {timestamp}: {translate(mode_labels[submission.mode])}"
                 )
                 lines.append(
-                    f"  Резюме: {submission.resume_name or 'не вказано'}"
+                    f"{translate('  Резюме: ')}"
+                    f"{submission.resume_name or translate('не вказано')}"
                 )
                 if submission.resume_sha256:
                     lines.append(f"  SHA-256: {submission.resume_sha256}")
                 lines.append(
-                    "  Супровідний лист: "
-                    + ("використано" if submission.cover_letter_text else "не використано")
+                    translate("  Супровідний лист: ")
+                    + translate(
+                        "використано"
+                        if submission.cover_letter_text
+                        else "не використано"
+                    )
                 )
                 if submission.destination_url:
-                    lines.append(f"  Адреса: {submission.destination_url}")
+                    lines.append(
+                        f"{translate('  Адреса: ')}{submission.destination_url}"
+                    )
         self._set_text(self.application_history, "\n".join(lines))
 
     def _update_application_status(self) -> None:
@@ -3475,7 +3483,7 @@ class SubmissionReviewDialog:
             "поверніться сюди й підтвердьте відправлення."
         )
         self.action_button.configure(
-            text="Так, заявку успішно відправлено",
+            text=translate("Так, заявку успішно відправлено"),
             command=self._confirm_submitted,
         )
 
