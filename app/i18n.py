@@ -5,16 +5,29 @@ from __future__ import annotations
 from tkinter import StringVar
 from typing import Any
 
+from app.i18n_de import EN_TO_DE, INLINE_EN_TO_DE
+
 
 DEFAULT_LANGUAGE = "uk"
-LANGUAGE_LABELS = {"uk": "Українська", "en": "English"}
+LANGUAGE_LABELS = {"uk": "Українська", "en": "English", "de": "Deutsch"}
+_LANGUAGE_DISPLAY_NAMES = {
+    "uk": {"uk": "Українська", "en": "Ukrainian", "de": "Ukrainisch"},
+    "en": {"uk": "Англійська", "en": "English", "de": "Englisch"},
+    "de": {"uk": "Німецька", "en": "German", "de": "Deutsch"},
+}
 _language = DEFAULT_LANGUAGE
 _localized_variables: set[str] = set()
+_UK_TO_DE_EXACT_OVERRIDES = {
+    "Копіювати": "Kopieren",
+    "Копія": "Kopie",
+}
 
 
 _UK_TO_EN = {
     # Main navigation and shared controls.
     "Українська": "Ukrainian",
+    "Англійська": "English",
+    "Німецька": "German",
     "Профіль": "Profile",
     "Пошук": "Search",
     "За розкладом (0)": "Scheduled (0)",
@@ -161,6 +174,9 @@ _UK_TO_EN = {
     "Локація": "Location",
     "Джерело": "Source",
     "Ключові збіги": "Key matches",
+    "Перегляд": "View status",
+    "Нова": "New",
+    "Переглянуто": "Viewed",
     "Статус": "Status",
     "Пояснення відповідності": "Match explanation",
     "Сортування:": "Sort:",
@@ -179,6 +195,17 @@ _UK_TO_EN = {
     "Бракує обов’язкових: ": "Missing required: ",
     "Ризики:": "Risks:",
     "Компоненти оцінювання:": "Scoring components:",
+    "Докази з тексту вакансії:": "Evidence from the job description:",
+    "Опис:": "Description:",
+    "Професія": "Role",
+    "Досвід": "Experience",
+    "не вказана": "not specified",
+    "повна": "full",
+    "часткова": "partial",
+    "слабка": "weak",
+    "обов’язкова": "required",
+    "бажана": "preferred",
+    "невідома": "unknown",
     "Повнота доказів для оцінювання: ": "Evidence coverage: ",
 
     # Scheduling.
@@ -189,6 +216,7 @@ _UK_TO_EN = {
     "Зберегти розклад": "Save schedule",
     "Розклад не налаштовано": "Schedule is not configured",
     "Нові та ще не переглянуті вакансії": "New and unseen jobs",
+    "Вакансії за розкладом": "Scheduled jobs",
     "Позначити всі переглянутими": "Mark all as seen",
     "Запустити зараз": "Run now",
     "Опубліковано": "Published",
@@ -447,6 +475,140 @@ _INLINE_UK_TO_EN = {
     "Активний профіль: ": "Active profile: ",
 }
 
+# Messages assembled at runtime are kept explicit so localization never performs
+# broad word replacement inside resume or job-description content.
+_UK_TO_EN.update(
+    {
+        "\nВідправлені матеріали:": "\nSubmitted materials:",
+        "\nПодії:": "\nEvents:",
+        "  Супровідний лист: ": "  Cover letter: ",
+        " — зачекайте": " — please wait",
+        "Інтернет-джерела не повернули вакансій для вибраних посад, локацій і радіуса.": "Online sources returned no jobs for the selected roles, locations, and radius.",
+        "Інші джерела оброблено.\n\n": "Other sources were processed.\n\n",
+        "Автоматичний пошук потребує профілю. Створити його зараз?": "Automatic search requires a profile. Create one now?",
+        "Вакансію для заявки не знайдено.": "The job for this application was not found.",
+        "Вакансії знайдено, але їх приховали фільтри": "Jobs were found but hidden by filters",
+        "Введіть щонайменше 2–3 літери назви міста.": "Enter at least 2–3 letters of the city name.",
+        "Введіть ім’я або назву профілю:": "Enter a name or profile title:",
+        "Виберіть місто у списку, яке потрібно видалити.": "Select the city to remove from the list.",
+        "Виберіть резюме": "Select a resume",
+        "Дочекайтеся завершення пошуку перед оновленням.": "Wait for the search to finish before updating.",
+        "Дочекайтеся завершення пошуку перед перемиканням профілю.": "Wait for the search to finish before switching profiles.",
+        "Закрийте JobCompass і розпакуйте нову portable-версію. Папку data та файл portable.flag потрібно зберегти.": "Close JobCompass and extract the new portable version. Keep the data folder and portable.flag file.",
+        "Закрити програму й перервати поточний пошук?": "Close the application and interrupt the current search?",
+        "Запускаю прострочений щоденний пошук…": "Starting the overdue daily search…",
+        "Зберегти поточний профіль перед створенням нового?": "Save the current profile before creating a new one?",
+        "Зберегти поточний профіль і налаштування перед перемиканням?": "Save the current profile and settings before switching?",
+        "Зберегти поточний профіль і параметри перед виходом?": "Save the current profile and settings before exiting?",
+        "Зберегти поточний профіль і параметри перед оновленням?": "Save the current profile and settings before updating?",
+        "Зберегти поточні посади, міста та фільтри перед запуском?": "Save the current roles, cities, and filters before running?",
+        "Копія": "Copy",
+        "Місто додано без географічної перевірки; за можливості оберіть підказку.": "The city was added without geographic verification; select a suggestion when possible.",
+        "Місто не знайдено. Перевірте написання або додайте введене вручну.": "City not found. Check the spelling or add the entered value manually.",
+        "Назва копії (історія та заявки не копіюються):": "Copy name (history and applications are not copied):",
+        "Не вдалося видалити профіль": "Could not delete profile",
+        "Не вдалося дублювати профіль": "Could not duplicate profile",
+        "Не вдалося експортувати профіль": "Could not export profile",
+        "Не вдалося зберегти результати": "Could not save results",
+        "Не вдалося перейменувати профіль": "Could not rename profile",
+        "Не вдалося імпортувати вакансії": "Could not import jobs",
+        "Не вдалося імпортувати профіль": "Could not import profile",
+        "Немає активного профілю.": "There is no active profile.",
+        "Нова назва профілю:": "New profile name:",
+        "Оберіть хоча б одне місто з підказки або натисніть «Додати введене без перевірки».": "Select at least one suggested city or click ‘Add entered city without verification’.",
+        "Обране та історія заявок у гостьовому режимі не зберігаються. Створити профіль зараз?": "Favorites and application history are not saved in guest mode. Create a profile now?",
+        "Оновлення перевірено й готове до встановлення. JobCompass буде закрито. Запустити інсталятор зараз?": "The update has been verified and is ready to install. JobCompass will close. Start the installer now?",
+        "Останній інтернет-пошук не повернув вакансій, тому зміна порога не може змінити список. Перевірте стан джерел над таблицею.": "The latest online search returned no jobs, so changing the threshold cannot change the list. Check the source status above the table.",
+        "Перевірте: ": "Check: ",
+        "Перенести гостьові дані?": "Transfer guest data?",
+        "Перенести поточне резюме, фільтри, результати та обране до нового профілю?": "Transfer the current resume, filters, results, and favorites to the new profile?",
+        "Посилання": "Link",
+        "Пошук за розкладом зберігає нові вакансії окремо для кандидата. Створити профіль?": "Scheduled search stores new jobs separately for each candidate. Create a profile?",
+        "Пошук…": "Searching…",
+        "Профіль успішно експортовано.": "Profile exported successfully.",
+        "Профіль і всі параметри пошуку збережено локально": "The profile and all search settings were saved locally",
+        "Профіль, резюме, міста, посади, фільтри та розклад збережено.": "Profile, resume, cities, roles, filters, and schedule were saved.",
+        "Резюме активне в поточному сеансі. Поля можна виправити перед збереженням.\n\n": "The resume is active in the current session. You can correct the fields before saving.\n\n",
+        "Резюме завантажено — натисніть «Зберегти профіль», щоб залишити його після закриття": "Resume loaded — click ‘Save profile’ to keep it after closing",
+        "Розклад і поточні параметри пошуку збережено.\n\n": "The schedule and current search settings were saved.\n\n",
+        "Спочатку виберіть вакансію.": "Select a job first.",
+        "Спочатку виберіть заявку.": "Select an application first.",
+        "Спочатку створіть профіль.": "Create a profile first.",
+        "Текст скопійовано в буфер обміну": "Text copied to the clipboard",
+        "У GitHub Release немає потрібного інсталяційного файла.": "The required installer file is missing from the GitHub Release.",
+        "Увімкнено гостьовий режим": "Guest mode enabled",
+        "Усі файли": "All files",
+        "Чернетку, промпт і вибрані параметри збережено локально.": "The draft, prompt, and selected settings were saved locally.",
+        "Щоб зберігати заявки й супровідні листи, створіть профіль. Створити зараз?": "Create a profile to save applications and cover letters. Create one now?",
+        "виключені компанії: ": "excluded companies: ",
+        "виключені слова: ": "excluded words: ",
+        "додаткові вимоги: ": "additional requirements: ",
+        "онлайн-джерела не вибрано": "no online sources selected",
+        "ще не запускався": "has not run yet",
+        "Отримано після фільтрів джерел: ": "Received after source filters: ",
+        "Пошук у мережі: ": "Online search: ",
+        "Remote": "Remote",
+        "Hybrid": "Hybrid",
+        "Office": "Office",
+        "Email": "Email",
+        "JobCompass profile": "JobCompass profile",
+        "Vacancy-specific cover letter draft created": "Vacancy-specific cover letter draft created",
+    }
+)
+
+_INLINE_UK_TO_EN.update(
+    {
+        "\n\nПродовжити все одно?": "\n\nContinue anyway?",
+        "\n\nФонове завдання Windows: ": "\n\nWindows background task: ",
+        "\nДодано нових: ": "\nNewly added: ",
+        "\nОстаннє оновлення: ": "\nLast updated: ",
+        "  Адреса: ": "  Address: ",
+        "  Резюме: ": "  Resume: ",
+        " (встановлено ": " (installed ",
+        " (часткові результати)": " (partial results)",
+        " | отримано: ": " | received: ",
+        " | при порозі ": " | at threshold ",
+        " | після об’єднання та фільтрів JobCompass: ": " | after merging and JobCompass filters: ",
+        " вакансій за посадами й локаціями, але їх прибрали додаткові фільтри.\n\n": " jobs for the roles and locations, but additional filters removed them.\n\n",
+        " вакансій. Найвища доступна оцінка: ": " jobs. Highest available score: ",
+        " вакансій. Найвищий score: ": " jobs. Highest score: ",
+        " і перевіряємо SHA-256…": " and verifying SHA-256…",
+        " — копія": " — copy",
+        "% показано: ": "% displayed: ",
+        "% приховано ": "% hidden ",
+        "% — без повторного запиту до сайтів": "% — without querying the sites again",
+        "%, встановлений поріг: ": "%, configured threshold: ",
+        "%. Зменште мінімальну релевантність.": "%. Lower the minimum match.",
+        ", додано нових вакансій: ": ", new jobs added: ",
+        ". Відкрийте ⚙.": ". Open ⚙.",
+        ". Оберіть точне місто зі списку.": ". Select the exact city from the list.",
+        ". Усі персональні дані ізольовані від інших профілів.": ". All personal data is isolated from other profiles.",
+        ": помилка": ": error",
+        "» разом із його заявками, обраним і розкладом?": "’ together with its applications, favorites, and schedule?",
+        "Автопошук завершено: нових вакансій — ": "Automatic search complete: new jobs — ",
+        "Автопошук не запущено: ": "Automatic search not started: ",
+        "Активовано профіль: ": "Profile activated: ",
+        "До порога релевантності дійшло ": "Jobs reaching the match threshold: ",
+        "Додано: ": "Added: ",
+        "Завантажуємо ": "Downloading ",
+        "Знайдено ": "Found ",
+        "Локальний поріг змінено на ": "Local threshold changed to ",
+        "На цю вакансію вже подавали заявку або вона має післяподачний статус.\n\nСтатус: ": "An application was already submitted for this job or it has a post-submission status.\n\nStatus: ",
+        "Назавжди видалити профіль «": "Permanently delete profile ‘",
+        "Не вдалося завантажити оновлення: ": "Could not download update: ",
+        "Не вдалося перевірити оновлення: ": "Could not check for updates: ",
+        "Нотатка: ": "Note: ",
+        "Отримано часткові результати; наступні сторінки недоступні: ": "Partial results received; subsequent pages are unavailable: ",
+        "Показано релевантних вакансій: ": "Matching jobs displayed: ",
+        "Помилка розкладу: ": "Schedule error: ",
+        "Порогом ": "Threshold ",
+        "Прочитано ": "Read ",
+        "Прочитано: ": "Read: ",
+        "Створено профіль: ": "Profile created: ",
+        "Супровідні матеріали збережено: ": "Application materials saved: ",
+    }
+)
+
 
 def normalize_language(value: str | None) -> str:
     return value if value in LANGUAGE_LABELS else DEFAULT_LANGUAGE
@@ -462,34 +624,86 @@ def get_language() -> str:
     return _language
 
 
+def language_label(code: str, interface_language: str | None = None) -> str:
+    """Return a localized language name for a stable language code."""
+
+    normalized_code = normalize_language(code)
+    display_language = normalize_language(interface_language or _language)
+    return _LANGUAGE_DISPLAY_NAMES[normalized_code][display_language]
+
+
+def language_from_label(label: str) -> str:
+    """Resolve a language selected in any supported interface language."""
+
+    for code, names in _LANGUAGE_DISPLAY_NAMES.items():
+        if label in names.values() or label == LANGUAGE_LABELS[code]:
+            return code
+    return DEFAULT_LANGUAGE
+
+
+def _canonical_exact(value: str) -> str | None:
+    if value in _UK_TO_EN:
+        return value
+    english_reverse = {translated: source for source, translated in _UK_TO_EN.items()}
+    canonical = english_reverse.get(value)
+    if canonical is not None:
+        return canonical
+    german_reverse = {
+        EN_TO_DE.get(english, english): source
+        for source, english in _UK_TO_EN.items()
+    }
+    german_reverse.update(
+        {translated: source for source, translated in _UK_TO_DE_EXACT_OVERRIDES.items()}
+    )
+    return german_reverse.get(value)
+
+
+def _target_exact(canonical: str) -> str:
+    if _language == "uk":
+        return canonical
+    english = _UK_TO_EN.get(canonical, canonical)
+    if _language == "de":
+        return _UK_TO_DE_EXACT_OVERRIDES.get(
+            canonical, EN_TO_DE.get(english, english)
+        )
+    return english
+
+
+def _inline_catalog(language: str) -> dict[str, str]:
+    if language == "uk":
+        return {source: source for source in _INLINE_UK_TO_EN}
+    if language == "de":
+        return {
+            source: INLINE_EN_TO_DE.get(english, EN_TO_DE.get(english, english))
+            for source, english in _INLINE_UK_TO_EN.items()
+        }
+    return dict(_INLINE_UK_TO_EN)
+
+
 def translate(value: Any) -> Any:
     """Translate UI text while leaving unknown user content untouched."""
 
     if not isinstance(value, str) or not value:
         return value
-    if _language == "en":
-        exact = _UK_TO_EN.get(value)
-        if exact is not None:
-            return exact
-        result = value
-        for source, target in sorted(
-            _INLINE_UK_TO_EN.items(), key=lambda item: len(item[0]), reverse=True
-        ):
-            if source in result:
-                result = result.replace(source, target)
-        return result
+    canonical = _canonical_exact(value)
+    if canonical is not None:
+        return _target_exact(canonical)
 
-    reverse = {english: ukrainian for ukrainian, english in _UK_TO_EN.items()}
-    exact = reverse.get(value)
-    if exact is not None:
-        return exact
-    inline_reverse = {
-        english: ukrainian for ukrainian, english in _INLINE_UK_TO_EN.items()
-    }
+    source_catalogs = (
+        _inline_catalog("uk"),
+        _inline_catalog("en"),
+        _inline_catalog("de"),
+    )
+    target_catalog = _inline_catalog(_language)
     result = value
-    for source, target in sorted(
-        inline_reverse.items(), key=lambda item: len(item[0]), reverse=True
-    ):
+    replacements: list[tuple[str, str]] = []
+    for canonical_fragment in _INLINE_UK_TO_EN:
+        target = target_catalog[canonical_fragment]
+        for catalog in source_catalogs:
+            source = catalog[canonical_fragment]
+            if source != target:
+                replacements.append((source, target))
+    for source, target in sorted(replacements, key=lambda item: len(item[0]), reverse=True):
         if source in result:
             result = result.replace(source, target)
     return result

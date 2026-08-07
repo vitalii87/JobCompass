@@ -359,16 +359,25 @@ class LocalJsonStore:
         return copy.deepcopy(state) if isinstance(state, dict) else {}
 
     def list_unseen_jobs(self) -> list[JobPosting]:
+        return [
+            job
+            for job, state in self.list_discovered_jobs()
+            if not state.get("seen_at")
+        ]
+
+    def list_discovered_jobs(self) -> list[tuple[JobPosting, dict[str, Any]]]:
+        """Return all profile discoveries, including jobs already opened."""
+
         profile = self._active_profile_data(self._read())
         states = profile.setdefault("job_states", {})
         jobs = {job.job_id: job for job in self.list_jobs()}
-        unseen = [
-            (state.get("first_seen_at", ""), jobs[job_id])
+        discovered = [
+            (state.get("first_seen_at", ""), jobs[job_id], copy.deepcopy(state))
             for job_id, state in states.items()
-            if job_id in jobs and isinstance(state, dict) and not state.get("seen_at")
+            if job_id in jobs and isinstance(state, dict)
         ]
-        unseen.sort(key=lambda item: item[0], reverse=True)
-        return [job for _, job in unseen]
+        discovered.sort(key=lambda item: item[0], reverse=True)
+        return [(job, state) for _, job, state in discovered]
 
     def list_favorite_job_ids(self) -> set[str]:
         profile = self._active_profile_data(self._read())

@@ -26,6 +26,16 @@ class LocalJsonStoreTests(unittest.TestCase):
 
             self.assertEqual(LocalJsonStore(path).load_app_language(), "en")
 
+    def test_german_interface_language_survives_reload(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "store.json"
+            store = LocalJsonStore(path)
+            store.initialize()
+
+            store.save_app_language("de")
+
+            self.assertEqual(LocalJsonStore(path).load_app_language(), "de")
+
     def test_jobs_and_application_status_survive_reload(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "jobcompass.json"

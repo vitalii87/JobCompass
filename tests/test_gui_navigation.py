@@ -4,6 +4,7 @@ import unittest
 
 from app.core.models import JobPosting, MatchLevel, MatchResult
 from app.core.search import RankedJob
+from app.i18n import set_language
 from app.interfaces.gui import JobCompassApp
 
 
@@ -37,8 +38,40 @@ class _FakeVariable:
     def get(self) -> str:
         return self.value
 
+    def set(self, value: str) -> None:
+        self.value = value
+
+
+class _FakeWidget:
+    def __init__(self) -> None:
+        self.options: dict[str, object] = {}
+        self.content = ""
+
+    def configure(self, **kwargs: object) -> None:
+        self.options.update(kwargs)
+
+    def get_children(self) -> tuple[object, ...]:
+        return ()
+
+    def delete(self, *_args: object) -> None:
+        self.content = ""
+
+    def insert(self, _position: str, value: str) -> None:
+        self.content = value
+
+
+class _FakeNotebook:
+    def __init__(self) -> None:
+        self.text = ""
+
+    def tab(self, _tab: object, *, text: str) -> None:
+        self.text = text
+
 
 class GuiNavigationTests(unittest.TestCase):
+    def tearDown(self) -> None:
+        set_language("uk")
+
     def test_enter_invokes_enabled_focused_button(self) -> None:
         button = _FakeButton()
 
@@ -95,6 +128,69 @@ class GuiNavigationTests(unittest.TestCase):
         self.assertEqual(
             [item.job.external_id for item in app._ordered_results()],
             ["new", "old", "unknown"],
+        )
+
+    def test_view_label_keeps_date_for_opened_job(self) -> None:
+        self.assertEqual(JobCompassApp._job_view_label(None), "Нова")
+        expected = datetime.fromisoformat(
+            "2026-08-06T20:15:00+00:00"
+        ).astimezone().strftime("%d.%m.%Y %H:%M")
+        self.assertEqual(
+            JobCompassApp._job_view_label("2026-08-06T20:15:00+00:00"),
+            f"Переглянуто · {expected}",
+        )
+
+    def test_guest_profile_label_refreshes_in_selected_language(self) -> None:
+        set_language("en")
+        app = object.__new__(JobCompassApp)
+        app.store = SimpleNamespace(
+            list_profiles=lambda: [],
+            active_profile_id=None,
+        )
+        app.profile_selector = _FakeWidget()
+        app.profile_selector_var = _FakeVariable("")
+
+        app._refresh_profile_selector()
+
+        self.assertEqual(
+            app.profile_selector.options["values"],
+            ("Guest mode (not saved)",),
+        )
+        self.assertEqual(app.profile_selector_var.get(), "Guest mode (not saved)")
+
+    def test_scheduled_tab_counter_refreshes_in_selected_language(self) -> None:
+        set_language("de")
+        app = object.__new__(JobCompassApp)
+        app.unseen_tree = _FakeWidget()
+        app.store = SimpleNamespace(list_discovered_jobs=lambda: [])
+        app.notebook = _FakeNotebook()
+        app.schedule_tab = object()
+
+        app._refresh_unseen_jobs()
+
+        self.assertEqual(app.notebook.text, "Zeitplan (0)")
+
+    def test_empty_results_message_refreshes_in_selected_language(self) -> None:
+        set_language("en")
+        app = object.__new__(JobCompassApp)
+        app.results_tree = _FakeWidget()
+        app.results_count_var = _FakeVariable("")
+        app.ranked_jobs = []
+        app.store = SimpleNamespace(
+            list_applications=lambda: [],
+            list_discovered_jobs=lambda: [],
+        )
+        app.result_sort_var = _FakeVariable("By relevance")
+        app.result_details = _FakeWidget()
+        app.empty_results_message = (
+            "Немає вакансій, що відповідають вибраним фільтрам."
+        )
+
+        app._render_results()
+
+        self.assertEqual(
+            app.result_details.content,
+            "No jobs match the selected filters.",
         )
 
 

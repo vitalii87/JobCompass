@@ -137,11 +137,18 @@ class MultiProfileStorageTests(unittest.TestCase):
             self.assertEqual(store.list_unseen_jobs(), [job])
             store.mark_job_seen(job.job_id)
             self.assertEqual(store.list_unseen_jobs(), [])
+            discovered = store.list_discovered_jobs()
+            self.assertEqual([item[0] for item in discovered], [job])
+            self.assertIsNotNone(discovered[0][1].get("seen_at"))
 
             store.create_profile("Second")
             self.assertEqual(store.list_unseen_jobs(), [])
+            self.assertEqual(store.list_discovered_jobs(), [])
             store.activate_profile(first.profile_id)
             self.assertEqual(store.list_unseen_jobs(), [])
+            self.assertEqual(
+                [item[0] for item in store.list_discovered_jobs()], [job]
+            )
 
 
 class SearchScheduleTests(unittest.TestCase):
