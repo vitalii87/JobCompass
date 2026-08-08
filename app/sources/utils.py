@@ -5,6 +5,7 @@ from __future__ import annotations
 import html
 import re
 from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from html.parser import HTMLParser
 
 
@@ -39,15 +40,41 @@ def html_to_text(value: object) -> str:
 def parse_published_at(value: object) -> datetime | None:
     if isinstance(value, (int, float)) and not isinstance(value, bool):
         try:
-            return datetime.fromtimestamp(float(value), timezone.utc)
+            timestamp = float(value)
+            if abs(timestamp) >= 100_000_000_000:
+                timestamp /= 1000
+            return datetime.fromtimestamp(timestamp, timezone.utc)
         except (OSError, OverflowError, ValueError):
             return None
     if not isinstance(value, str) or not value.strip():
         return None
+    raw = value.strip()
+    if re.fullmatch(r"\d{8}", raw):
+        try:
+            return datetime.strptime(raw, "%Y%m%d").replace(tzinfo=timezone.utc)
+        except ValueError:
+            return None
+    if re.fullmatch(r"-?\d+(?:\.\d+)?", raw):
+        try:
+            return parse_published_at(float(raw))
+        except ValueError:
+            return None
     try:
-        parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
     except ValueError:
-        return None
+        parsed = None
+    if parsed is None:
+        for date_format in ("%d.%m.%Y",):
+            try:
+                parsed = datetime.strptime(raw, date_format)
+                break
+            except ValueError:
+                continue
+    if parsed is None:
+        try:
+            parsed = parsedate_to_datetime(raw)
+        except (TypeError, ValueError):
+            return None
     return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=timezone.utc)
 
 

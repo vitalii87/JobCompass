@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+from datetime import datetime, timedelta, timezone
 
 from app.core.deduplication import deduplicate_jobs
 from app.core.models import JobPosting
@@ -19,6 +20,40 @@ class ScheduledSearchReport:
     source_counts: dict[str, int]
     errors: dict[str, str]
     skipped: bool = False
+
+
+def fresh_scheduled_jobs(
+    jobs: list[JobPosting],
+    last_run_at: datetime | None,
+    *,
+    now: datetime | None = None,
+) -> list[JobPosting]:
+    """Return reliably dated jobs published since the last scheduled run.
+
+    Some sources expose only a calendar date. Comparing local calendar dates
+    prevents those vacancies from being lost because their time is represented
+    as midnight. Jobs with no valid publication date remain available in normal
+    search, but are not labelled as fresh scheduled discoveries.
+    """
+    current = now or datetime.now(timezone.utc)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone.utc)
+    baseline = last_run_at or (current - timedelta(hours=24))
+    if baseline.tzinfo is None:
+        baseline = baseline.replace(tzinfo=timezone.utc)
+    earliest_date = baseline.astimezone().date()
+    latest_date = current.astimezone().date()
+
+    fresh: list[JobPosting] = []
+    for job in jobs:
+        published_at = job.published_at
+        if published_at is None:
+            continue
+        if published_at.tzinfo is None:
+            published_at = published_at.replace(tzinfo=timezone.utc)
+        if earliest_date <= published_at.astimezone().date() <= latest_date:
+            fresh.append(job)
+    return fresh
 
 
 def run_scheduled_search(
@@ -113,8 +148,18 @@ def run_scheduled_search(
         )
         result_ids = [item.job.job_id for item in ranked]
         store.save_last_result_job_ids(result_ids)
-        new_count = store.record_job_discoveries(result_ids)
-        store.mark_schedule_run()
+        fresh_ids = [
+            job.job_id
+            for job in fresh_scheduled_jobs(
+                [item.job for item in ranked], schedule.last_run_at
+            )
+        ]
+        new_count = store.record_job_discoveries(fresh_ids)
+        successful_sources = {
+            name for name in online_names if name not in errors or counts.get(name, 0)
+        }
+        if successful_sources:
+            store.mark_schedule_run()
         return ScheduledSearchReport(
             profile_id=profile_id,
             matched_count=len(ranked),

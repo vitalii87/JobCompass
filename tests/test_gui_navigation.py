@@ -162,7 +162,7 @@ class GuiNavigationTests(unittest.TestCase):
         set_language("de")
         app = object.__new__(JobCompassApp)
         app.unseen_tree = _FakeWidget()
-        app.store = SimpleNamespace(list_discovered_jobs=lambda: [])
+        app.store = SimpleNamespace(list_scheduled_jobs=lambda: [])
         app.notebook = _FakeNotebook()
         app.schedule_tab = object()
 

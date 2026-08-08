@@ -300,7 +300,11 @@ class LocalJsonStore:
         return len({job.job_id for job in unique} - existing_ids)
 
     def record_job_discoveries(
-        self, job_ids: list[str], *, occurred_at: datetime | None = None
+        self,
+        job_ids: list[str],
+        *,
+        occurred_at: datetime | None = None,
+        scheduled: bool = True,
     ) -> int:
         profile = self._active_profile_data(self._read())
         states = profile.setdefault("job_states", {})
@@ -313,9 +317,12 @@ class LocalJsonStore:
                     "first_seen_at": now,
                     "seen_at": None,
                     "favorite": False,
+                    "scheduled": scheduled,
                 }
                 states[job_id] = state
                 new_count += 1
+            elif scheduled:
+                state["scheduled"] = True
             state["last_seen_at"] = now
         self._save_active_profile_data(profile)
         return new_count
@@ -361,8 +368,16 @@ class LocalJsonStore:
     def list_unseen_jobs(self) -> list[JobPosting]:
         return [
             job
-            for job, state in self.list_discovered_jobs()
+            for job, state in self.list_scheduled_jobs()
             if not state.get("seen_at")
+        ]
+
+    def list_scheduled_jobs(self) -> list[tuple[JobPosting, dict[str, Any]]]:
+        """Return scheduled discoveries; missing flags preserve legacy data."""
+        return [
+            (job, state)
+            for job, state in self.list_discovered_jobs()
+            if state.get("scheduled", True)
         ]
 
     def list_discovered_jobs(self) -> list[tuple[JobPosting, dict[str, Any]]]:

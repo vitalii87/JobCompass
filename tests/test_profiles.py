@@ -150,6 +150,19 @@ class MultiProfileStorageTests(unittest.TestCase):
                 [item[0] for item in store.list_discovered_jobs()], [job]
             )
 
+    def test_manual_discovery_does_not_appear_in_scheduled_jobs(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = LocalJsonStore(Path(directory) / "jobcompass.json")
+            store.create_profile("Candidate")
+            job = JobPosting("test", "manual", "Manual", "ACME")
+            store.save_jobs([job])
+
+            store.record_job_discoveries([job.job_id], scheduled=False)
+
+            self.assertEqual(len(store.list_discovered_jobs()), 1)
+            self.assertEqual(store.list_scheduled_jobs(), [])
+            self.assertEqual(store.list_unseen_jobs(), [])
+
 
 class SearchScheduleTests(unittest.TestCase):
     def test_daily_schedule_runs_only_after_time_and_once_per_day(self) -> None:

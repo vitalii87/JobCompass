@@ -60,6 +60,7 @@ from app.services import (
 from app import __version__
 from app.sources import JsonFileSource, ONLINE_SOURCE_TYPES, SearchQuery
 from app.storage import LocalJsonStore
+from app.services.scheduled_search import fresh_scheduled_jobs
 from app.i18n import (
     LANGUAGE_LABELS,
     LocalizedDialogProxy,
@@ -2300,9 +2301,28 @@ class JobCompassApp:
             )
             result_job_ids = [item.job.job_id for item in self.ranked_jobs]
             self.store.save_last_result_job_ids(result_job_ids)
-            new_count = self.store.record_job_discoveries(result_job_ids)
+            discovery_ids = result_job_ids
             if self.scheduled_search_running and not self.store.is_guest:
-                self.store.mark_schedule_run()
+                schedule = self.store.load_schedule()
+                discovery_ids = [
+                    job.job_id
+                    for job in fresh_scheduled_jobs(
+                        [item.job for item in self.ranked_jobs],
+                        schedule.last_run_at,
+                    )
+                ]
+            new_count = self.store.record_job_discoveries(
+                discovery_ids,
+                scheduled=self.scheduled_search_running,
+            )
+            if self.scheduled_search_running and not self.store.is_guest:
+                successful_sources = {
+                    name
+                    for name in selected_online_sources
+                    if name not in errors or counts.get(name, 0)
+                }
+                if successful_sources:
+                    self.store.mark_schedule_run()
                 self.schedule_status_var.set(
                     f"Автопошук завершено: нових вакансій — {new_count}"
                 )
@@ -2676,7 +2696,7 @@ class JobCompassApp:
         if not hasattr(self, "unseen_tree"):
             return
         self.unseen_tree.delete(*self.unseen_tree.get_children())
-        discovered = self.store.list_discovered_jobs()
+        discovered = self.store.list_scheduled_jobs()
         unseen_count = sum(not state.get("seen_at") for _, state in discovered)
         for job, state in discovered:
             self.unseen_tree.insert(
