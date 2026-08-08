@@ -10,6 +10,11 @@ from app.services.cover_letter import (
 from app.services.geocoding import LocationGeocoder
 from app.services.resume import ResumeLoadResult, load_resume
 from app.services.windows_scheduler import sync_windows_search_task
+from app.services.cover_letter_pdf import (
+    CoverLetterPdfError,
+    export_cover_letter_pdf,
+    suggested_cover_letter_filename,
+)
 from app.services.update import (
     ReleaseAsset,
     ReleaseInfo,
@@ -38,6 +43,9 @@ __all__ = [
     "ReleaseAsset",
     "ReleaseInfo",
     "UpdateError",
+    "CoverLetterPdfError",
+    "export_cover_letter_pdf",
+    "suggested_cover_letter_filename",
     "check_latest_release",
     "download_release_asset",
     "is_newer_version",

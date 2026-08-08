@@ -44,6 +44,8 @@ from app.services import (
     build_ai_prompt,
     build_cover_letter_draft,
     build_evidence_summary,
+    CoverLetterPdfError,
+    export_cover_letter_pdf,
     LocationGeocoder,
     load_resume,
     sync_windows_search_task,
@@ -55,6 +57,7 @@ from app.services import (
     is_newer_version,
     runtime_mode,
     SubmissionPreparationError,
+    suggested_cover_letter_filename,
     prepare_submission,
 )
 from app import __version__
@@ -3256,6 +3259,7 @@ class SubmissionReviewDialog:
         self.ranked = ranked
         self.pending_submission = None
         self.allow_duplicate = False
+        self.cover_letter_pdf_path = ""
         self.window = Toplevel(app.root)
         self.window.title("Перевірка перед відправленням")
         self.window.geometry("820x720")
@@ -3300,10 +3304,11 @@ class SubmissionReviewDialog:
             text="З допомогою JobCompass — рекомендовано",
             variable=self.mode_var,
             value=SubmissionMode.ASSISTED.value,
+            command=self._update_action_button,
         ).grid(row=0, column=0, sticky="w")
         ttk.Label(
             mode_frame,
-            text="Лист копіюється, папка з резюме та сторінка вакансії відкриваються.",
+            text="Супровідний лист копіюється в буфер, після чого відкривається сторінка вакансії.",
             foreground="#555555",
         ).grid(row=1, column=0, sticky="w", padx=(24, 0))
         ttk.Radiobutton(
@@ -3311,6 +3316,7 @@ class SubmissionReviewDialog:
             text="Ручне — лише відкрити сторінку вакансії",
             variable=self.mode_var,
             value=SubmissionMode.MANUAL.value,
+            command=self._update_action_button,
         ).grid(row=2, column=0, sticky="w", pady=(7, 0))
         automatic = ttk.Radiobutton(
             mode_frame,
@@ -3392,7 +3398,7 @@ class SubmissionReviewDialog:
         )
         self.action_button = ttk.Button(
             buttons,
-            text="Почати відправлення",
+            text="Скопіювати лист і відкрити вакансію",
             command=self._start_submission,
             style="Primary.TButton",
         )
@@ -3400,6 +3406,29 @@ class SubmissionReviewDialog:
         ttk.Button(
             buttons, text="Скопіювати лист", command=self._copy_letter
         ).pack(side="left")
+        ttk.Button(
+            buttons,
+            text="Зберегти лист як PDF…",
+            command=self._save_letter_pdf,
+        ).pack(side="left", padx=(6, 0))
+        self._update_action_button()
+
+    @staticmethod
+    def _action_label(mode: SubmissionMode, has_letter: bool) -> str:
+        if mode is SubmissionMode.ASSISTED and has_letter:
+            return "Скопіювати лист і відкрити вакансію"
+        return "Відкрити вакансію"
+
+    def _update_action_button(self) -> None:
+        if self.pending_submission is not None:
+            return
+        mode = SubmissionMode(self.mode_var.get())
+        has_letter = bool(
+            self.cover_letter_text.get("1.0", "end-1c").strip()
+        )
+        self.action_button.configure(
+            text=translate(self._action_label(mode, has_letter))
+        )
 
     def _choose_resume(self) -> None:
         path = filedialog.askopenfilename(
@@ -3437,6 +3466,34 @@ class SubmissionReviewDialog:
         self.window.clipboard_clear()
         self.window.clipboard_append(value)
         self.progress_var.set("Супровідний лист скопійовано в буфер обміну.")
+
+    def _save_letter_pdf(self) -> None:
+        value = self.cover_letter_text.get("1.0", "end-1c").strip()
+        if not value:
+            self.progress_var.set("Супровідний лист порожній.")
+            return
+        downloads = Path.home() / "Downloads"
+        destination = filedialog.asksaveasfilename(
+            parent=self.window,
+            title="Зберегти супровідний лист як PDF",
+            initialdir=str(downloads if downloads.is_dir() else Path.home()),
+            initialfile=suggested_cover_letter_filename(
+                self.ranked.job.company, self.ranked.job.title
+            ),
+            defaultextension=".pdf",
+            filetypes=(("PDF", "*.pdf"),),
+        )
+        if not destination:
+            return
+        try:
+            output = export_cover_letter_pdf(value, destination)
+        except CoverLetterPdfError as error:
+            messagebox.showerror(
+                "Не вдалося створити PDF", str(error), parent=self.window
+            )
+            return
+        self.cover_letter_pdf_path = str(output)
+        self.progress_var.set(f"PDF супровідного листа збережено: {output}")
 
     def _confirm_duplicate(self) -> bool:
         existing = self.app.store.get_application(self.ranked.job.job_id)
@@ -3490,18 +3547,21 @@ class SubmissionReviewDialog:
             messagebox.showerror("Не вдалося підготувати заявку", str(error), parent=self.window)
             return
 
-        if mode is SubmissionMode.ASSISTED:
-            if self.pending_submission.cover_letter_text:
-                self._copy_letter()
-            self._show_resume()
+        letter_copied = bool(
+            mode is SubmissionMode.ASSISTED
+            and self.pending_submission.cover_letter_text.strip()
+        )
+        if letter_copied:
+            self._copy_letter()
         if not self.app._open_job_for(self.ranked.job):
             self.pending_submission = None
             return
-        self.progress_var.set(
-            "Сторінку вакансії відкрито. Заповніть і перевірте форму, прикріпіть "
-            "оригінальне резюме та натисніть Submit на сайті. Після успіху "
-            "поверніться сюди й підтвердьте відправлення."
+        progress = (
+            "Супровідний лист скопійовано, сторінку вакансії відкрито. Заповніть і перевірте форму, прикріпіть оригінальне резюме та натисніть Submit на сайті. Після успіху поверніться сюди й підтвердьте відправлення."
+            if letter_copied
+            else "Сторінку вакансії відкрито. Заповніть і перевірте форму, прикріпіть оригінальне резюме та натисніть Submit на сайті. Після успіху поверніться сюди й підтвердьте відправлення."
         )
+        self.progress_var.set(progress)
         self.action_button.configure(
             text=translate("Так, заявку успішно відправлено"),
             command=self._confirm_submitted,

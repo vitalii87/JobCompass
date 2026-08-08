@@ -306,7 +306,12 @@ _UK_TO_EN = {
     "Обрати…": "Choose…",
     "Показати файл": "Show file",
     "Скопіювати лист": "Copy letter",
+    "Зберегти лист як PDF…": "Save letter as PDF…",
+    "Зберегти супровідний лист як PDF": "Save cover letter as PDF",
+    "Не вдалося створити PDF": "Could not create PDF",
+    "PDF супровідного листа збережено: ": "Cover letter PDF saved: ",
     "Почати відправлення": "Start submission",
+    "Скопіювати лист і відкрити вакансію": "Copy letter and open job",
     "Так, заявку успішно відправлено": "Yes, the application was submitted",
     "Можлива повторна подача": "Possible duplicate application",
     "Підтвердження відправлення": "Submission confirmation",
@@ -320,8 +325,8 @@ _UK_TO_EN = {
         "Review exactly what will be used for the application. JobCompass will not "
         "mark it as submitted without your separate confirmation."
     ),
-    "Лист копіюється, папка з резюме та сторінка вакансії відкриваються.": (
-        "The letter is copied, and the resume folder and job page are opened."
+    "Супровідний лист копіюється в буфер, після чого відкривається сторінка вакансії.": (
+        "The cover letter is copied to the clipboard, then the job page is opened."
     ),
     "До форми прикріплюється оригінальний файл. Розпарсений текст використовується лише локально й роботодавцю не надсилається.": (
         "Attach the original file to the form. Parsed text is used locally only and "
@@ -358,6 +363,11 @@ _UK_TO_EN = {
         "The job page is open. Complete and review the form, attach the original "
         "resume, and click Submit on the site. After success, return here and "
         "confirm the submission."
+    ),
+    "Супровідний лист скопійовано, сторінку вакансії відкрито. Заповніть і перевірте форму, прикріпіть оригінальне резюме та натисніть Submit на сайті. Після успіху поверніться сюди й підтвердьте відправлення.": (
+        "The cover letter was copied and the job page is open. Complete and review "
+        "the form, attach the original resume, and click Submit on the site. After "
+        "success, return here and confirm the submission."
     ),
     "Заявку підтверджено й записано: ": "Application confirmed and recorded: ",
     "Відправлені матеріали:": "Submitted materials:",

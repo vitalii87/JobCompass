@@ -2,10 +2,10 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 import unittest
 
-from app.core.models import JobPosting, MatchLevel, MatchResult
+from app.core.models import JobPosting, MatchLevel, MatchResult, SubmissionMode
 from app.core.search import RankedJob
 from app.i18n import set_language
-from app.interfaces.gui import JobCompassApp
+from app.interfaces.gui import JobCompassApp, SubmissionReviewDialog
 
 
 class _FakeButton:
@@ -69,6 +69,20 @@ class _FakeNotebook:
 
 
 class GuiNavigationTests(unittest.TestCase):
+    def test_submission_action_explains_clipboard_and_browser_behavior(self) -> None:
+        self.assertEqual(
+            SubmissionReviewDialog._action_label(SubmissionMode.ASSISTED, True),
+            "Скопіювати лист і відкрити вакансію",
+        )
+        self.assertEqual(
+            SubmissionReviewDialog._action_label(SubmissionMode.MANUAL, True),
+            "Відкрити вакансію",
+        )
+        self.assertEqual(
+            SubmissionReviewDialog._action_label(SubmissionMode.ASSISTED, False),
+            "Відкрити вакансію",
+        )
+
     def tearDown(self) -> None:
         set_language("uk")
 

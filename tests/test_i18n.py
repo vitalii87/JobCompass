@@ -63,6 +63,10 @@ class I18nTests(unittest.TestCase):
         )
         self.assertEqual(translate("Опис:"), "Beschreibung:")
         self.assertEqual(translate("Viewed"), "Angesehen")
+        self.assertEqual(
+            translate("Скопіювати лист і відкрити вакансію"),
+            "Anschreiben kopieren und Stelle öffnen",
+        )
 
     def test_interface_can_switch_from_german_to_ukrainian(self) -> None:
         set_language("de")

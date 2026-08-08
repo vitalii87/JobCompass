@@ -259,7 +259,12 @@ EN_TO_DE = {
     "Choose…": "Auswählen…",
     "Show file": "Datei anzeigen",
     "Copy letter": "Anschreiben kopieren",
+    "Save letter as PDF…": "Anschreiben als PDF speichern…",
+    "Save cover letter as PDF": "Anschreiben als PDF speichern",
+    "Could not create PDF": "PDF konnte nicht erstellt werden",
+    "Cover letter PDF saved: ": "PDF des Anschreibens gespeichert: ",
     "Start submission": "Bewerbung starten",
+    "Copy letter and open job": "Anschreiben kopieren und Stelle öffnen",
     "Yes, the application was submitted": "Ja, die Bewerbung wurde abgesendet",
     "Possible duplicate application": "Mögliche doppelte Bewerbung",
     "Submission confirmation": "Versandbestätigung",
@@ -272,8 +277,8 @@ EN_TO_DE = {
         "Prüfen Sie genau, was für die Bewerbung verwendet wird. JobCompass markiert sie erst nach Ihrer "
         "separaten Bestätigung als abgesendet."
     ),
-    "The letter is copied, and the resume folder and job page are opened.": (
-        "Das Anschreiben wird kopiert und der Lebenslaufordner sowie die Stellenseite werden geöffnet."
+    "The cover letter is copied to the clipboard, then the job page is opened.": (
+        "Das Anschreiben wird in die Zwischenablage kopiert, danach wird die Stellenseite geöffnet."
     ),
     "Attach the original file to the form. Parsed text is used locally only and is not sent to the employer.": (
         "Fügen Sie die Originaldatei dem Formular bei. Der extrahierte Text wird nur lokal verwendet und "
@@ -302,6 +307,11 @@ EN_TO_DE = {
     "The job page is open. Complete and review the form, attach the original resume, and click Submit on the site. After success, return here and confirm the submission.": (
         "Die Stellenseite ist geöffnet. Füllen Sie das Formular aus, prüfen Sie es, fügen Sie den originalen "
         "Lebenslauf bei und senden Sie es auf der Website ab. Kehren Sie anschließend hierher zurück und bestätigen Sie den Versand."
+    ),
+    "The cover letter was copied and the job page is open. Complete and review the form, attach the original resume, and click Submit on the site. After success, return here and confirm the submission.": (
+        "Das Anschreiben wurde kopiert und die Stellenseite ist geöffnet. Füllen Sie das Formular aus, prüfen "
+        "Sie es, fügen Sie den originalen Lebenslauf bei und senden Sie es auf der Website ab. Kehren Sie "
+        "anschließend hierher zurück und bestätigen Sie den Versand."
     ),
     "Application confirmed and recorded: ": "Bewerbung bestätigt und gespeichert: ",
     "Submitted materials:": "Versendete Unterlagen:",

@@ -3,7 +3,7 @@ Unicode True
 !include "MUI2.nsh"
 
 !ifndef APP_VERSION
-  !define APP_VERSION "0.10.2"
+  !define APP_VERSION "0.10.3"
 !endif
 
 !define APP_NAME "JobCompass"

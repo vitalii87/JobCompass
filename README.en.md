@@ -34,8 +34,8 @@ uses the standard library plus the local PDF parser `pypdf`.
 Release packages are available on the
 [GitHub Releases page](https://github.com/vitalii87/JobCompass/releases):
 
-- `JobCompass-0.10.2-Setup.exe` — per-user installer for Windows 10/11 x64;
-- `JobCompass-0.10.2-Portable.zip` — portable package;
+- `JobCompass-0.10.3-Setup.exe` — per-user installer for Windows 10/11 x64;
+- `JobCompass-0.10.3-Portable.zip` — portable package;
 - `SHA256SUMS.txt` — integrity checksums.
 
 The installer does not require administrator rights. It creates Start Menu and
@@ -163,9 +163,10 @@ included in the AI prompt.
 Before an application, JobCompass opens a pre-submission review. The user can:
 
 - choose manual mode, which opens the job page;
-- choose assisted mode, which copies the cover letter, shows the original resume
-  file, and opens the job page;
+- choose assisted mode, which copies the cover letter and opens the job page;
 - edit or paste a final cover letter;
+- export the reviewed cover letter locally as an A4 PDF when the employer form
+  requires a file upload;
 - choose the exact original PDF or DOCX intended for submission.
 
 The user still reviews the employer form and clicks its final Submit button.
