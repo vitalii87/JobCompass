@@ -130,6 +130,30 @@ class SearchTests(unittest.TestCase):
 
         self.assertEqual(len(results), 3)
 
+    def test_remote_and_hybrid_filter_excludes_office_jobs(self) -> None:
+        jobs = [
+            JobPosting(
+                source="modes",
+                external_id=mode.value,
+                title="Python Developer",
+                company=mode.value,
+                required_skills=("Python",),
+                work_mode=mode,
+            )
+            for mode in (WorkMode.REMOTE, WorkMode.HYBRID, WorkMode.OFFICE)
+        ]
+
+        results = search_jobs(
+            self.profile,
+            jobs,
+            SearchFilters(work_modes=(WorkMode.REMOTE, WorkMode.HYBRID)),
+        )
+
+        self.assertEqual(
+            {item.job.work_mode for item in results},
+            {WorkMode.REMOTE, WorkMode.HYBRID},
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

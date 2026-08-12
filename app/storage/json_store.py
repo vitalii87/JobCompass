@@ -6,13 +6,19 @@ import copy
 import json
 import os
 import tempfile
+import threading
+import time
 import uuid
+from contextlib import contextmanager
 from dataclasses import replace
 from datetime import datetime
+from functools import wraps
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Callable, Iterator, Mapping, ParamSpec, TypeVar
+from urllib.parse import urlsplit
 
-from app.core.deduplication import deduplicate_jobs
+from app.core.deduplication import deduplicate_jobs_with_aliases
+from app.core.source_registry import SourceRegistryEntry
 from app.core.models import (
     ApplicationEvent,
     ApplicationRecord,
@@ -27,6 +33,32 @@ from app.core.profiles import ProfileSummary, SavedSearchPreferences, SearchSche
 from app.i18n import DEFAULT_LANGUAGE, normalize_language
 
 
+_P = ParamSpec("_P")
+_R = TypeVar("_R")
+_PROCESS_LOCKS: dict[str, threading.RLock] = {}
+_PROCESS_LOCKS_GUARD = threading.Lock()
+
+
+def _process_lock_for(path: Path) -> threading.RLock:
+    key = str(path.resolve()).casefold()
+    with _PROCESS_LOCKS_GUARD:
+        return _PROCESS_LOCKS.setdefault(key, threading.RLock())
+
+
+def _locked_mutation(
+    method: Callable[_P, _R],
+) -> Callable[_P, _R]:
+    """Keep every read-modify-write operation atomic across store instances."""
+
+    @wraps(method)
+    def wrapped(*args: _P.args, **kwargs: _P.kwargs) -> _R:
+        store = args[0]
+        with store._mutation_lock():
+            return method(*args, **kwargs)
+
+    return wrapped
+
+
 class LocalJsonStore:
     """Store shared vacancies and isolate every candidate's private workspace."""
 
@@ -34,6 +66,9 @@ class LocalJsonStore:
 
     def __init__(self, path: str | Path) -> None:
         self.path = Path(path)
+        self._lock_path = self.path.with_name(f".{self.path.name}.lock")
+        self._process_lock = _process_lock_for(self.path)
+        self._lock_state = threading.local()
         self._active_profile_id: str | None = None
         self._guest_data = self._empty_profile_data("guest", "Гостьовий режим")
         if self.path.exists():
@@ -50,6 +85,7 @@ class LocalJsonStore:
         value = settings.get("language") if isinstance(settings, Mapping) else None
         return normalize_language(value if isinstance(value, str) else None)
 
+    @_locked_mutation
     def save_app_language(self, language: str) -> None:
         data = self._read()
         settings = data.setdefault("settings", {})
@@ -59,10 +95,98 @@ class LocalJsonStore:
         settings["language"] = normalize_language(language)
         self._write(data)
 
+    def load_career_urls(self) -> tuple[str, ...]:
+        settings = self._read().get("settings", {})
+        raw = settings.get("career_urls", []) if isinstance(settings, Mapping) else []
+        if not isinstance(raw, list):
+            return ()
+        return tuple(
+            dict.fromkeys(
+                value.strip()
+                for value in raw
+                if isinstance(value, str) and value.strip()
+            )
+        )
+
+    @_locked_mutation
+    def save_career_urls(self, urls: tuple[str, ...]) -> None:
+        cleaned = tuple(
+            dict.fromkeys(value.strip() for value in urls if value.strip())
+        )
+        if any(
+            urlsplit(value).scheme.casefold() not in {"http", "https"}
+            or not urlsplit(value).netloc
+            for value in cleaned
+        ):
+            raise ValueError("Career URL має починатися з https:// або http://")
+        data = self._read()
+        settings = data.setdefault("settings", {})
+        if not isinstance(settings, dict):
+            settings = {}
+            data["settings"] = settings
+        settings["career_urls"] = list(cleaned)
+        self._write(data)
+
+    def list_source_registry(self) -> list[SourceRegistryEntry]:
+        raw = self._read().get("source_registry", [])
+        if not isinstance(raw, list):
+            return []
+        result: list[SourceRegistryEntry] = []
+        for item in raw:
+            if not isinstance(item, Mapping):
+                continue
+            try:
+                result.append(SourceRegistryEntry.from_dict(item))
+            except (TypeError, ValueError):
+                continue
+        return result
+
+    @_locked_mutation
+    def save_source_registry(self, entries: list[SourceRegistryEntry]) -> None:
+        unique = {entry.source_id: entry for entry in entries}
+        data = self._read()
+        data["source_registry"] = [
+            entry.to_dict()
+            for entry in sorted(
+                unique.values(),
+                key=lambda item: (item.company.casefold(), item.career_url),
+            )
+        ]
+        self._write(data)
+
+    @_locked_mutation
+    def upsert_source_registry(
+        self, entries: list[SourceRegistryEntry]
+    ) -> int:
+        existing = {entry.source_id: entry for entry in self.list_source_registry()}
+        added = 0
+        for entry in entries:
+            previous = existing.get(entry.source_id)
+            if previous is None:
+                existing[entry.source_id] = entry
+                added += 1
+                continue
+            existing[entry.source_id] = replace(
+                previous,
+                company=entry.company or previous.company,
+                ats_type=(
+                    entry.ats_type
+                    if entry.ats_type.value not in {"generic_html", "json_ld"}
+                    or previous.ats_type.value in {"generic_html", "json_ld"}
+                    else previous.ats_type
+                ),
+                country=entry.country or previous.country,
+                region=entry.region or previous.region,
+                discovered_from=previous.discovered_from or entry.discovered_from,
+            )
+        self.save_source_registry(list(existing.values()))
+        return added
+
     @property
     def is_guest(self) -> bool:
         return self._active_profile_id is None
 
+    @_locked_mutation
     def initialize(self) -> None:
         if not self.path.exists():
             self._write(self._empty_data())
@@ -79,6 +203,7 @@ class LocalJsonStore:
         raw = self._read()["profiles"].get(profile_id)
         return self._profile_summary(raw) if isinstance(raw, dict) else None
 
+    @_locked_mutation
     def create_profile(
         self,
         name: str,
@@ -100,6 +225,7 @@ class LocalJsonStore:
         self._write(data)
         return self._profile_summary(profile_data)
 
+    @_locked_mutation
     def activate_profile(self, profile_id: str | None) -> datetime | None:
         data = self._read()
         if profile_id is None:
@@ -123,6 +249,7 @@ class LocalJsonStore:
             raise ValueError(f"Unknown profile: {profile_id}")
         self._active_profile_id = profile_id
 
+    @_locked_mutation
     def rename_profile(self, profile_id: str, name: str) -> ProfileSummary:
         cleaned_name = self._validated_profile_name(name)
         data = self._read()
@@ -135,6 +262,7 @@ class LocalJsonStore:
         self._write(data)
         return self._profile_summary(profile)
 
+    @_locked_mutation
     def duplicate_profile(self, profile_id: str, name: str) -> ProfileSummary:
         cleaned_name = self._validated_profile_name(name)
         data = self._read()
@@ -165,6 +293,7 @@ class LocalJsonStore:
         self._write(data)
         return self._profile_summary(duplicated)
 
+    @_locked_mutation
     def delete_profile(self, profile_id: str) -> None:
         data = self._read()
         if profile_id not in data["profiles"]:
@@ -189,6 +318,7 @@ class LocalJsonStore:
             raise ValueError("Guest profile can only be set in guest mode")
         self._guest_data["candidate"] = profile.to_dict()
 
+    @_locked_mutation
     def save_profile(self, profile: CandidateProfile) -> None:
         if self.is_guest:
             self.create_profile(profile.full_name or "Основний профіль", profile)
@@ -206,6 +336,7 @@ class LocalJsonStore:
             raise ValueError("Search preferences must be a JSON object")
         return SavedSearchPreferences.from_dict(raw)
 
+    @_locked_mutation
     def save_search_preferences(self, preferences: SavedSearchPreferences) -> None:
         self._update_active_profile_value(
             "search_preferences", preferences.to_dict()
@@ -218,9 +349,11 @@ class LocalJsonStore:
             raise ValueError("Schedule must be a JSON object")
         return SearchSchedule.from_dict(raw)
 
+    @_locked_mutation
     def save_schedule(self, schedule: SearchSchedule) -> None:
         self._update_active_profile_value("schedule", schedule.to_dict())
 
+    @_locked_mutation
     def mark_schedule_run(self, occurred_at: datetime | None = None) -> None:
         schedule = self.load_schedule()
         self.save_schedule(
@@ -231,6 +364,7 @@ class LocalJsonStore:
             )
         )
 
+    @_locked_mutation
     def save_resume_info(self, path: str, raw_text: str) -> None:
         self._update_active_profile_value(
             "resume", {"path": path.strip(), "raw_text": raw_text}
@@ -245,6 +379,7 @@ class LocalJsonStore:
         text = raw.get("raw_text") if isinstance(raw.get("raw_text"), str) else ""
         return path, text
 
+    @_locked_mutation
     def save_last_result_job_ids(self, job_ids: list[str]) -> None:
         cleaned = list(dict.fromkeys(item.strip() for item in job_ids if item.strip()))
         self._update_active_profile_value("last_result_job_ids", cleaned)
@@ -264,6 +399,7 @@ class LocalJsonStore:
             }
         )
 
+    @_locked_mutation
     def restore_activity(self, snapshot: Mapping[str, Any]) -> None:
         profile = self._active_profile_data(self._read())
         for key in (
@@ -287,6 +423,7 @@ class LocalJsonStore:
     def get_job(self, job_id: str) -> JobPosting | None:
         return next((job for job in self.list_jobs() if job.job_id == job_id), None)
 
+    @_locked_mutation
     def save_jobs(self, jobs: list[JobPosting]) -> int:
         data = self._read()
         existing = [JobPosting.from_dict(item) for item in data["jobs"]]
@@ -294,11 +431,16 @@ class LocalJsonStore:
         combined_by_id = {job.job_id: job for job in existing}
         for job in jobs:
             combined_by_id[job.job_id] = job
-        unique = deduplicate_jobs(combined_by_id.values())
+        unique, aliases = deduplicate_jobs_with_aliases(combined_by_id.values())
+        self._remap_profile_job_references(data, aliases)
         data["jobs"] = [job.to_dict() for job in unique]
         self._write(data)
-        return len({job.job_id for job in unique} - existing_ids)
+        canonical_existing_ids = {
+            aliases.get(job_id, job_id) for job_id in existing_ids
+        }
+        return len({job.job_id for job in unique} - canonical_existing_ids)
 
+    @_locked_mutation
     def record_job_discoveries(
         self,
         job_ids: list[str],
@@ -327,6 +469,7 @@ class LocalJsonStore:
         self._save_active_profile_data(profile)
         return new_count
 
+    @_locked_mutation
     def mark_job_seen(self, job_id: str, seen: bool = True) -> None:
         profile = self._active_profile_data(self._read())
         states = profile.setdefault("job_states", {})
@@ -341,6 +484,7 @@ class LocalJsonStore:
         state["seen_at"] = utc_now().isoformat() if seen else None
         self._save_active_profile_data(profile)
 
+    @_locked_mutation
     def mark_all_jobs_seen(self) -> None:
         profile = self._active_profile_data(self._read())
         now = utc_now().isoformat()
@@ -349,6 +493,7 @@ class LocalJsonStore:
                 state["seen_at"] = now
         self._save_active_profile_data(profile)
 
+    @_locked_mutation
     def set_job_favorite(self, job_id: str, favorite: bool = True) -> None:
         profile = self._active_profile_data(self._read())
         states = profile.setdefault("job_states", {})
@@ -421,6 +566,7 @@ class LocalJsonStore:
             None,
         )
 
+    @_locked_mutation
     def save_cover_letter_preparation(
         self, preparation: CoverLetterPreparation
     ) -> None:
@@ -450,6 +596,7 @@ class LocalJsonStore:
             None,
         )
 
+    @_locked_mutation
     def set_application_status(
         self,
         job_id: str,
@@ -495,6 +642,7 @@ class LocalJsonStore:
         self._save_active_profile_data(profile)
         return updated
 
+    @_locked_mutation
     def record_application_submission(
         self,
         job_id: str,
@@ -587,6 +735,7 @@ class LocalJsonStore:
             encoding="utf-8",
         )
 
+    @_locked_mutation
     def import_profile(self, path: str | Path) -> ProfileSummary:
         try:
             payload = json.loads(Path(path).read_text(encoding="utf-8"))
@@ -636,7 +785,9 @@ class LocalJsonStore:
         ]
         existing_jobs = [JobPosting.from_dict(item) for item in data["jobs"]]
         combined = {item.job_id: item for item in [*existing_jobs, *imported_jobs]}
-        data["jobs"] = [item.to_dict() for item in deduplicate_jobs(combined.values())]
+        unique, aliases = deduplicate_jobs_with_aliases(combined.values())
+        self._remap_profile_job_references(data, aliases)
+        data["jobs"] = [item.to_dict() for item in unique]
         data["active_profile_id"] = new_id
         self._active_profile_id = new_id
         self._write(data)
@@ -667,6 +818,135 @@ class LocalJsonStore:
         profile[key] = value
         self._save_active_profile_data(profile)
 
+    @classmethod
+    def _remap_profile_job_references(
+        cls,
+        data: dict[str, Any],
+        aliases: Mapping[str, str],
+    ) -> None:
+        changed = {
+            old_id: new_id
+            for old_id, new_id in aliases.items()
+            if old_id != new_id
+        }
+        if not changed:
+            return
+        for profile in data.get("profiles", {}).values():
+            if isinstance(profile, dict):
+                cls._remap_one_profile(profile, changed)
+
+    @classmethod
+    def _remap_one_profile(
+        cls,
+        profile: dict[str, Any],
+        aliases: Mapping[str, str],
+    ) -> None:
+        raw_states = profile.get("job_states", {})
+        states: dict[str, dict[str, Any]] = {}
+        if isinstance(raw_states, Mapping):
+            for old_id, raw_state in raw_states.items():
+                if not isinstance(old_id, str) or not isinstance(raw_state, Mapping):
+                    continue
+                new_id = aliases.get(old_id, old_id)
+                state = copy.deepcopy(dict(raw_state))
+                previous = states.get(new_id)
+                states[new_id] = (
+                    cls._merge_job_states(previous, state)
+                    if previous is not None
+                    else state
+                )
+        profile["job_states"] = states
+
+        raw_result_ids = profile.get("last_result_job_ids", [])
+        if isinstance(raw_result_ids, list):
+            profile["last_result_job_ids"] = list(
+                dict.fromkeys(
+                    aliases.get(job_id, job_id)
+                    for job_id in raw_result_ids
+                    if isinstance(job_id, str)
+                )
+            )
+
+        applications: dict[str, ApplicationRecord] = {}
+        for raw in profile.get("applications", []):
+            if not isinstance(raw, Mapping):
+                continue
+            try:
+                item = ApplicationRecord.from_dict(raw)
+            except (TypeError, ValueError):
+                continue
+            item = replace(item, job_id=aliases.get(item.job_id, item.job_id))
+            previous = applications.get(item.job_id)
+            applications[item.job_id] = (
+                cls._merge_applications(previous, item)
+                if previous is not None
+                else item
+            )
+        profile["applications"] = [item.to_dict() for item in applications.values()]
+
+        preparations: dict[str, CoverLetterPreparation] = {}
+        for raw in profile.get("cover_letters", []):
+            if not isinstance(raw, Mapping):
+                continue
+            try:
+                item = CoverLetterPreparation.from_dict(raw)
+            except (TypeError, ValueError):
+                continue
+            item = replace(item, job_id=aliases.get(item.job_id, item.job_id))
+            previous = preparations.get(item.job_id)
+            if previous is None or item.updated_at >= previous.updated_at:
+                preparations[item.job_id] = item
+        profile["cover_letters"] = [
+            item.to_dict() for item in preparations.values()
+        ]
+
+    @staticmethod
+    def _merge_job_states(
+        left: Mapping[str, Any],
+        right: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        merged = {**left, **right}
+        for key in ("favorite", "scheduled"):
+            merged[key] = bool(left.get(key)) or bool(right.get(key))
+        for key, choose in (
+            ("first_seen_at", min),
+            ("last_seen_at", max),
+            ("seen_at", max),
+        ):
+            values = [
+                value
+                for value in (left.get(key), right.get(key))
+                if isinstance(value, str) and value
+            ]
+            merged[key] = choose(values) if values else None
+        return merged
+
+    @staticmethod
+    def _merge_applications(
+        left: ApplicationRecord,
+        right: ApplicationRecord,
+    ) -> ApplicationRecord:
+        latest = right if right.updated_at >= left.updated_at else left
+        history = tuple(
+            sorted(
+                {*left.history, *right.history},
+                key=lambda event: event.occurred_at,
+            )
+        )
+        submissions = tuple(
+            sorted(
+                {*left.submissions, *right.submissions},
+                key=lambda submission: submission.submitted_at,
+            )
+        )
+        return replace(
+            latest,
+            created_at=min(left.created_at, right.created_at),
+            updated_at=max(left.updated_at, right.updated_at),
+            history=history,
+            submissions=submissions,
+        )
+
     def _read(self) -> dict[str, Any]:
         if not self.path.exists():
             return self._empty_data()
@@ -686,34 +966,92 @@ class LocalJsonStore:
             raise ValueError("Storage must contain a job list")
         if not isinstance(data.get("profiles"), dict):
             raise ValueError("Storage must contain a profile object")
-        settings = data.setdefault("settings", {"language": DEFAULT_LANGUAGE})
+        settings = data.setdefault(
+            "settings", {"language": DEFAULT_LANGUAGE, "career_urls": []}
+        )
         if not isinstance(settings, dict):
             raise ValueError("Storage settings must be an object")
         settings["language"] = normalize_language(settings.get("language"))
+        if not isinstance(settings.get("career_urls", []), list):
+            settings["career_urls"] = []
+        if not isinstance(data.get("source_registry", []), list):
+            data["source_registry"] = []
         active = data.get("active_profile_id")
         if active is not None and active not in data["profiles"]:
             data["active_profile_id"] = None
         return data
 
     def _write(self, data: dict[str, Any]) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        temporary_path: Path | None = None
-        try:
-            with tempfile.NamedTemporaryFile(
-                "w",
-                encoding="utf-8",
-                dir=self.path.parent,
-                prefix=f".{self.path.name}.",
-                suffix=".tmp",
-                delete=False,
-            ) as stream:
-                json.dump(data, stream, ensure_ascii=False, indent=2)
-                stream.write("\n")
-                temporary_path = Path(stream.name)
-            os.replace(temporary_path, self.path)
-        finally:
-            if temporary_path is not None and temporary_path.exists():
-                temporary_path.unlink()
+        with self._mutation_lock():
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            temporary_path: Path | None = None
+            try:
+                with tempfile.NamedTemporaryFile(
+                    "w",
+                    encoding="utf-8",
+                    dir=self.path.parent,
+                    prefix=f".{self.path.name}.",
+                    suffix=".tmp",
+                    delete=False,
+                ) as stream:
+                    json.dump(data, stream, ensure_ascii=False, indent=2)
+                    stream.write("\n")
+                    temporary_path = Path(stream.name)
+                os.replace(temporary_path, self.path)
+            finally:
+                if temporary_path is not None and temporary_path.exists():
+                    temporary_path.unlink()
+
+    @contextmanager
+    def _mutation_lock(self, timeout_seconds: float = 15.0) -> Iterator[None]:
+        """Serialize mutations in this process and across JobCompass processes."""
+
+        with self._process_lock:
+            depth = int(getattr(self._lock_state, "depth", 0))
+            if depth:
+                self._lock_state.depth = depth + 1
+                try:
+                    yield
+                finally:
+                    self._lock_state.depth = depth
+                return
+
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            deadline = time.monotonic() + timeout_seconds
+            while True:
+                try:
+                    descriptor = os.open(
+                        self._lock_path,
+                        os.O_CREAT | os.O_EXCL | os.O_WRONLY,
+                    )
+                except FileExistsError:
+                    try:
+                        age = time.time() - self._lock_path.stat().st_mtime
+                        if age > 30.0:
+                            self._lock_path.unlink()
+                            continue
+                    except FileNotFoundError:
+                        continue
+                    if time.monotonic() >= deadline:
+                        raise TimeoutError(
+                            "JobCompass storage is busy in another process"
+                        )
+                    time.sleep(0.05)
+                    continue
+                else:
+                    with os.fdopen(descriptor, "w", encoding="ascii") as stream:
+                        stream.write(f"{os.getpid()}\n")
+                    break
+
+            self._lock_state.depth = 1
+            try:
+                yield
+            finally:
+                self._lock_state.depth = 0
+                try:
+                    self._lock_path.unlink()
+                except FileNotFoundError:
+                    pass
 
     @classmethod
     def _migrate_v1(cls, data: dict[str, Any]) -> dict[str, Any]:
@@ -744,9 +1082,10 @@ class LocalJsonStore:
         return {
             "schema_version": cls.SCHEMA_VERSION,
             "active_profile_id": None,
-            "settings": {"language": DEFAULT_LANGUAGE},
+            "settings": {"language": DEFAULT_LANGUAGE, "career_urls": []},
             "profiles": {},
             "jobs": [],
+            "source_registry": [],
         }
 
     @staticmethod

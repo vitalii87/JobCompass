@@ -284,6 +284,8 @@ class OnlineSourceTests(unittest.TestCase):
 
         self.assertEqual(len(jobs), 1)
         self.assertTrue(jobs[0].is_remote)
+        self.assertEqual(len(client.calls), 1)
+        self.assertEqual(client.calls[0][1], {})
 
 
 if __name__ == "__main__":

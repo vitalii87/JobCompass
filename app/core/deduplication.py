@@ -40,27 +40,82 @@ def job_fingerprint(job: JobPosting) -> str:
 
 
 def deduplicate_jobs(jobs: Iterable[JobPosting]) -> list[JobPosting]:
-    """Keep the first vacancy when IDs, canonical URLs, or fingerprints repeat."""
+    """Merge repeats while preferring the richest direct-company record."""
 
-    result: list[JobPosting] = []
-    seen_ids: set[str] = set()
-    seen_urls: set[str] = set()
-    seen_fingerprints: set[str] = set()
+    unique, _ = deduplicate_jobs_with_aliases(jobs)
+    return unique
 
-    for job in jobs:
+
+def deduplicate_jobs_with_aliases(
+    jobs: Iterable[JobPosting],
+) -> tuple[list[JobPosting], dict[str, str]]:
+    """Return canonical records and old-to-canonical job-id aliases.
+
+    The aliases let persistent stores retain favorites, viewed dates, cover
+    letters, and application history when a richer direct-company record
+    replaces the same vacancy previously found through an aggregator.
+    """
+
+    items = list(jobs)
+    if not items:
+        return [], {}
+
+    parents = list(range(len(items)))
+
+    def find(index: int) -> int:
+        while parents[index] != index:
+            parents[index] = parents[parents[index]]
+            index = parents[index]
+        return index
+
+    def union(left: int, right: int) -> None:
+        left_root = find(left)
+        right_root = find(right)
+        if left_root != right_root:
+            parents[max(left_root, right_root)] = min(left_root, right_root)
+
+    identity_indexes: dict[tuple[str, str], int] = {}
+    for index, job in enumerate(items):
+        identities = [("id", job.job_id), ("fingerprint", job_fingerprint(job))]
         normalized_url = _normalize_url(job.url)
-        fingerprint = job_fingerprint(job)
-        if job.job_id in seen_ids:
-            continue
-        if normalized_url and normalized_url in seen_urls:
-            continue
-        if fingerprint in seen_fingerprints:
-            continue
-
-        result.append(job)
-        seen_ids.add(job.job_id)
         if normalized_url:
-            seen_urls.add(normalized_url)
-        seen_fingerprints.add(fingerprint)
+            identities.append(("url", normalized_url))
+        for identity in identities:
+            previous = identity_indexes.get(identity)
+            if previous is None:
+                identity_indexes[identity] = index
+            else:
+                union(index, previous)
 
-    return result
+    groups: dict[int, list[int]] = {}
+    for index in range(len(items)):
+        groups.setdefault(find(index), []).append(index)
+
+    unique: list[JobPosting] = []
+    aliases: dict[str, str] = {}
+    for indexes in sorted(groups.values(), key=min):
+        selected_index = max(indexes, key=lambda item: _record_quality(items[item]))
+        selected = items[selected_index]
+        unique.append(selected)
+        for index in indexes:
+            aliases[items[index].job_id] = selected.job_id
+    return unique, aliases
+
+
+def _record_quality(job: JobPosting) -> tuple[int, int, int, int]:
+    """Rank duplicate records without changing their match score."""
+
+    direct_sources = {
+        "Company career pages",
+        "Greenhouse careers",
+        "Lever careers",
+        "Ashby careers",
+        "Personio careers",
+        "Workday careers",
+    }
+    return (
+        int(job.source in direct_sources),
+        int(bool(job.description)),
+        int(job.published_at is not None),
+        len(job.description),
+    )

@@ -70,9 +70,24 @@ EN_TO_DE = {
         "JobCompass durchsucht ausgewählte Online-Quellen nach aktuellen Stellen, "
         "führt Duplikate zusammen und bewertet die Übereinstimmung mit dem Lebenslauf."
     ),
+    "Enter a role, city, and work mode. JobCompass will check available sources, discover career sites, remove duplicates, and evaluate jobs automatically.": (
+        "Geben Sie Position, Ort und Arbeitsmodell an. JobCompass prüft verfügbare "
+        "Quellen, findet Karriereseiten, entfernt Duplikate und bewertet Stellen automatisch."
+    ),
+    "Search started: JobCompass is checking available sources…": (
+        "Suche gestartet: JobCompass prüft verfügbare Quellen…"
+    ),
     "Job search": "Stellensuche",
     "Platforms / sources": "Plattformen / Quellen",
     "Filters": "Filter",
+    "Work mode": "Arbeitsmodell",
+    "All work modes": "Alle Arbeitsmodelle",
+    "Remote or hybrid": "Remote oder Hybrid",
+    "Remote only": "Nur Remote",
+    "Hybrid only": "Nur Hybrid",
+    "Office only": "Nur vor Ort",
+    "Advanced filters": "Erweiterte Filter",
+    "Hide advanced filters": "Erweiterte Filter ausblenden",
     "Additional requirements (not cities)": "Zusätzliche Anforderungen (keine Orte)",
     "Locations (cities) *": "Orte (Städte) *",
     "Suggestion country": "Land für Ortsvorschläge",
@@ -89,6 +104,7 @@ EN_TO_DE = {
     ),
     "Minimum match": "Mindestübereinstimmung",
     "Find jobs online": "Stellen online suchen",
+    "Find jobs": "Stellen suchen",
     "Save settings": "Einstellungen speichern",
     "Comma-separated.": "Durch Kommas getrennt.",
     "All countries": "Alle Länder",
@@ -341,11 +357,49 @@ EN_TO_DE = {
         "Anschreiben, kostenloser Modus: Lokaler Entwurf und verbesserter Prompt sind verfügbar.\n"
         "Anschreiben, KI/API-Modus: geplant; Tokens werden noch nicht angenommen und es erfolgen keine externen KI-Aufrufe."
     ),
+    "Company career sites": "Karriereseiten von Unternehmen",
+    "Greenhouse career sites": "Greenhouse-Karriereseiten",
+    "Lever career sites": "Lever-Karriereseiten",
+    "Ashby career sites": "Ashby-Karriereseiten",
+    "Personio career sites": "Personio-Karriereseiten",
+    "Workday career sites": "Workday-Karriereseiten",
+    "Advanced → Sources": "Erweitert → Quellen",
+    "Search channels": "Suchkanäle",
+    "Career URL — advanced/debug": "Karriere-URL — erweitert/Debug",
+    "Save manual sources": "Manuelle Quellen speichern",
+    "Automatically discovered sources": "Automatisch gefundene Quellen",
+    "Company": "Unternehmen",
+    "Type": "Typ",
+    "Status": "Status",
+    "Checked": "Geprüft",
+    "Country / region": "Land / Region",
+    "Last success": "Letzter Erfolg",
+    "Discovered": "Gefunden",
+    "Active": "Aktiv",
+    "Error": "Fehler",
+    "Blocked": "Blockiert",
+    "Disabled": "Deaktiviert",
+    "JobCompass automatically discovers and remembers career sites. The fields below are only for diagnostics or manually adding a source.": (
+        "JobCompass findet Karriereseiten automatisch und merkt sie sich. Die "
+        "folgenden Felder dienen nur der Diagnose oder dem manuellen Hinzufügen."
+    ),
+    "Optional. One URL per line; Greenhouse, Lever, Ashby, Personio, Workday, JSON-LD, and permitted HTML/sitemaps are supported.": (
+        "Optional. Eine URL pro Zeile; unterstützt werden Greenhouse, Lever, Ashby, "
+        "Personio, Workday, JSON-LD sowie erlaubte HTML-Seiten und Sitemaps."
+    ),
+    "One URL per line. JobCompass automatically recognizes Greenhouse, Lever, Ashby, and Personio, or reads permitted schema.org/JobPosting data.": (
+        "Eine URL pro Zeile. JobCompass erkennt Greenhouse, Lever, Ashby und Personio "
+        "automatisch oder liest zulässige schema.org/JobPosting-Daten."
+    ),
+    "Save career sites": "Karriereseiten speichern",
+    "Could not save career sites": "Karriereseiten konnten nicht gespeichert werden",
     "Updates": "Aktualisierungen",
     "Check for updates": "Nach Aktualisierungen suchen",
     "Check again": "Erneut prüfen",
     "Try again": "Erneut versuchen",
     "Current version: ": "Aktuelle Version: ",
+    "Career sites saved: ": "Karriereseiten gespeichert: ",
+    "Manual career sites saved: ": "Manuelle Karriereseiten gespeichert: ",
     "Check whether a new JobCompass version is available.": "Prüfen Sie, ob eine neue JobCompass-Version verfügbar ist.",
     "Checking for updates…": "Aktualisierungen werden geprüft…",
     "Download and install": "Herunterladen und installieren",
@@ -403,6 +457,7 @@ INLINE_EN_TO_DE = {
     "Last run: ": "Letzte Ausführung: ",
     "Current status: ": "Aktueller Status: ",
     "Current version: ": "Aktuelle Version: ",
+    "Career sites saved: ": "Karriereseiten gespeichert: ",
     "Application confirmed and recorded: ": "Bewerbung bestätigt und gespeichert: ",
     "New portable version saved to: ": "Neue Portable-Version gespeichert unter: ",
     "A new version is available: ": "Eine neue Version ist verfügbar: ",
@@ -412,6 +467,12 @@ INLINE_EN_TO_DE = {
     "Suggestions found: ": "Gefundene Vorschläge: ",
     "City already selected: ": "Ort bereits ausgewählt: ",
     "Active profile: ": "Aktives Profil: ",
+    "Known career sites: ": "Bekannte Karriereseiten: ",
+    "Sources checked: ": "Geprüfte Quellen: ",
+    "new career sites: ": "neue Karriereseiten: ",
+    "jobs collected: ": "gesammelte Stellen: ",
+    "matching the profile: ": "zum Profil passend: ",
+    "Manual career sites saved: ": "Manuelle Karriereseiten gespeichert: ",
 }
 
 EN_TO_DE.update(
@@ -434,6 +495,7 @@ EN_TO_DE.update(
         "Close JobCompass and extract the new portable version. Keep the data folder and portable.flag file.": "Schließen Sie JobCompass und entpacken Sie die neue Portable-Version. Behalten Sie den Ordner data und die Datei portable.flag bei.",
         "Close the application and interrupt the current search?": "Anwendung schließen und die laufende Suche abbrechen?",
         "Starting the overdue daily search…": "Die überfällige tägliche Suche wird gestartet…",
+        "The scheduled search is not due yet.": "Die geplante Suche ist noch nicht fällig.",
         "Save the current profile before creating a new one?": "Aktuelles Profil vor dem Erstellen eines neuen Profils speichern?",
         "Save the current profile and settings before switching?": "Aktuelles Profil und Einstellungen vor dem Wechsel speichern?",
         "Save the current profile and settings before exiting?": "Aktuelles Profil und Einstellungen vor dem Beenden speichern?",
@@ -523,6 +585,7 @@ INLINE_EN_TO_DE.update(
         ": error": ": Fehler",
         "’ together with its applications, favorites, and schedule?": "“ zusammen mit Bewerbungen, Favoriten und Zeitplan endgültig löschen?",
         "Automatic search complete: new jobs — ": "Automatische Suche abgeschlossen: neue Stellen — ",
+        "Automatic search did not update results; retrying in 30 minutes.": "Die automatische Suche hat keine Ergebnisse aktualisiert; erneuter Versuch in 30 Minuten.",
         "Automatic search not started: ": "Automatische Suche nicht gestartet: ",
         "Profile activated: ": "Profil aktiviert: ",
         "Jobs reaching the match threshold: ": "Stellen ab dem Übereinstimmungsschwellenwert: ",

@@ -9,10 +9,11 @@ from typing import Any
 from app.core.models import JobPosting
 from app.core.taxonomy import text_matches_keyword
 from app.parsing import enrich_job_posting
-from app.sources.base import SearchQuery
+from app.sources.base import SearchQuery, SourceAccess, SourceCapabilities
 
 
 class JsonFileSource:
+    capabilities = SourceCapabilities(access=SourceAccess.LOCAL_FILE)
     name = "json-file"
 
     def __init__(self, path: str | Path) -> None:

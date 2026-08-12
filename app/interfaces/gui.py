@@ -7,7 +7,7 @@ import subprocess
 import tempfile
 import webbrowser
 from dataclasses import replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from queue import Empty, Queue
 from threading import Thread
@@ -35,11 +35,14 @@ from app.core.models import (
     CoverLetterPreparation,
     JobPosting,
     SubmissionMode,
+    WorkMode,
 )
 from app.core.location import LocationSelection
 from app.core.paths import default_data_path
 from app.core.profiles import SavedSearchPreferences, SearchSchedule
+from app.core.source_registry import SourceRegistryStatus, normalize_registry_url
 from app.core.search import RankedJob, SearchFilters, search_jobs
+from app.core.query_generator import generate_role_queries
 from app.services import (
     build_ai_prompt,
     build_cover_letter_draft,
@@ -59,11 +62,23 @@ from app.services import (
     SubmissionPreparationError,
     suggested_cover_letter_filename,
     prepare_submission,
+    DiscoverySearchCoordinator,
+    DiscoverySearchReport,
+    SearchProgress,
 )
 from app import __version__
-from app.sources import JsonFileSource, ONLINE_SOURCE_TYPES, SearchQuery
+from app.sources import (
+    JsonFileSource,
+    SearchOrchestrator,
+    SearchQuery,
+    build_online_sources,
+)
 from app.storage import LocalJsonStore
-from app.services.scheduled_search import fresh_scheduled_jobs
+from app.services.scheduled_search import (
+    ScheduledSearchReport,
+    fresh_scheduled_jobs,
+    run_scheduled_search,
+)
 from app.i18n import (
     LANGUAGE_LABELS,
     LocalizedDialogProxy,
@@ -98,6 +113,74 @@ _WORK_MODE_LABELS = {
     "office": "Office",
     "unknown": "Не вказано",
 }
+
+_SOURCE_LABELS = {
+    "Greenhouse careers": "Greenhouse career-сайти",
+    "Lever careers": "Lever career-сайти",
+    "Ashby careers": "Ashby career-сайти",
+    "Personio careers": "Personio career-сайти",
+    "Workday careers": "Workday career-сайти",
+    "Company career pages": "Career-сайти компаній",
+}
+
+_SOURCE_REGISTRY_STATUS_LABELS = {
+    "discovered": "Знайдено",
+    "active": "Активне",
+    "error": "Помилка",
+    "blocked": "Заблоковано",
+    "disabled": "Вимкнено",
+}
+
+_WORK_MODE_FILTER_OPTIONS = {
+    "Усі формати": (),
+    "Remote або hybrid": (WorkMode.REMOTE, WorkMode.HYBRID),
+    "Тільки remote": (WorkMode.REMOTE,),
+    "Тільки hybrid": (WorkMode.HYBRID,),
+    "Тільки office": (WorkMode.OFFICE,),
+}
+
+
+def _source_label(source: str) -> str:
+    return translate(_SOURCE_LABELS.get(source, source))
+
+
+def _enabled_registry_urls(store: LocalJsonStore) -> tuple[str, ...]:
+    return tuple(
+        entry.career_url
+        for entry in store.list_source_registry()
+        if entry.status
+        not in {SourceRegistryStatus.BLOCKED, SourceRegistryStatus.DISABLED}
+    )
+
+
+def _enabled_manual_career_urls(store: LocalJsonStore) -> tuple[str, ...]:
+    blocked_urls = {
+        entry.career_url
+        for entry in store.list_source_registry()
+        if entry.status
+        in {SourceRegistryStatus.BLOCKED, SourceRegistryStatus.DISABLED}
+    }
+    return tuple(
+        url
+        for url in store.load_career_urls()
+        if normalize_registry_url(url) not in blocked_urls
+    )
+
+
+def _work_modes_from_label(value: str) -> tuple[WorkMode, ...]:
+    translated_value = translate(value)
+    for label, modes in _WORK_MODE_FILTER_OPTIONS.items():
+        if translated_value == translate(label):
+            return modes
+    return ()
+
+
+def _work_mode_label(modes: tuple[str, ...]) -> str:
+    normalized = tuple(WorkMode(value) for value in modes)
+    for label, candidate in _WORK_MODE_FILTER_OPTIONS.items():
+        if normalized == candidate:
+            return translate(label)
+    return translate("Усі формати")
 
 _LETTER_TONES = {
     "Професійний": "professional",
@@ -165,9 +248,18 @@ class JobCompassApp:
         self.ranked_jobs: list[RankedJob] = []
         self.result_by_id: dict[str, RankedJob] = {}
         self.source_vars: dict[str, BooleanVar] = {}
-        self.online_sources = {
-            source_type.name: source_type() for source_type in ONLINE_SOURCE_TYPES
-        }
+        known_source_urls = _enabled_registry_urls(self.store)
+        self.online_sources = build_online_sources(
+            tuple(
+                dict.fromkeys(
+                    (*_enabled_manual_career_urls(self.store), *known_source_urls)
+                )
+            )
+        )
+        self.search_orchestrator = SearchOrchestrator()
+        self.search_coordinator = DiscoverySearchCoordinator(
+            self.store, orchestrator=self.search_orchestrator
+        )
         self.search_queue: Queue[object] = Queue()
         self.location_lookup_queue: Queue[object] = Queue()
         self.update_queue: Queue[object] = Queue()
@@ -187,6 +279,7 @@ class JobCompassApp:
         self.location_lookup_polling = False
         self.search_running = False
         self.scheduled_search_running = False
+        self.schedule_retry_not_before: dict[str, datetime] = {}
         self.profile_display_to_id: dict[str, str | None] = {}
         self.current_resume_path = ""
         self.current_resume_text = ""
@@ -497,6 +590,17 @@ class JobCompassApp:
         if self.notebook.select() == str(self.search_tab):
             self._run_search()
         return "break"
+
+    def _toggle_advanced_search_filters(self) -> None:
+        if self.advanced_search_frame.winfo_manager():
+            self.advanced_search_frame.grid_remove()
+            self.advanced_filters_button.configure(text=translate("Розширені фільтри"))
+        else:
+            self.advanced_search_frame.grid()
+            self.advanced_filters_button.configure(
+                text=translate("Сховати розширені")
+            )
+        self._update_search_scrollregion()
 
     def _update_search_scrollregion(self, _event: object | None = None) -> None:
         bounds = self.search_canvas.bbox("all")
@@ -835,7 +939,13 @@ class JobCompassApp:
             ),
             excluded_keywords=_split_list(self.excluded_keyword_var.get()),
             excluded_companies=_split_list(self.excluded_company_var.get()),
-            remote_only=self.filter_remote_var.get(),
+            remote_only=(
+                _work_modes_from_label(self.work_mode_var.get())
+                == (WorkMode.REMOTE,)
+            ),
+            work_modes=tuple(
+                mode.value for mode in _work_modes_from_label(self.work_mode_var.get())
+            ),
             minimum_score=round(self.minimum_score_var.get()),
             result_sort=self.result_sort_var.get(),
         )
@@ -846,6 +956,12 @@ class JobCompassApp:
         self.excluded_keyword_var.set(", ".join(preferences.excluded_keywords))
         self.excluded_company_var.set(", ".join(preferences.excluded_companies))
         self.filter_remote_var.set(preferences.remote_only)
+        self.work_mode_var.set(
+            _work_mode_label(
+                preferences.work_modes
+                or ((WorkMode.REMOTE.value,) if preferences.remote_only else ())
+            )
+        )
         self.minimum_score_var.set(preferences.minimum_score)
         self.minimum_score_label.configure(text=f"{preferences.minimum_score}%")
         self.location_radius_var.set(preferences.radius_km or 0)
@@ -991,8 +1107,9 @@ class JobCompassApp:
         notice = ttk.Label(
             self.search_tab,
             text=(
-                "JobCompass шукає актуальні вакансії у вибраних інтернет-джерелах, "
-                "об’єднує дублікати та оцінює відповідність резюме."
+                "Вкажіть професію, місто й формат роботи. JobCompass сам перевірить "
+                "доступні джерела, знайде career-сайти, прибере дублікати та "
+                "оцінить вакансії."
             ),
             wraplength=900,
         )
@@ -1025,15 +1142,10 @@ class JobCompassApp:
         )
         content.bind("<Configure>", self._update_search_scrollregion)
         self.search_canvas.bind("<Configure>", self._resize_search_scroll_content)
-        content.columnconfigure(1, weight=1)
-
-        self.sources_frame = ttk.LabelFrame(
-            content, text="Платформи / джерела", padding=12
-        )
-        self.sources_frame.grid(row=0, column=0, sticky="nsw", padx=(0, 8))
+        content.columnconfigure(0, weight=1)
 
         filters = ttk.LabelFrame(content, text="Фільтри", padding=12)
-        filters.grid(row=0, column=1, sticky="nsew")
+        filters.grid(row=0, column=0, sticky="nsew")
         filters.columnconfigure(1, weight=1)
         self.role_var = StringVar()
         self.keyword_var = StringVar()
@@ -1043,6 +1155,7 @@ class JobCompassApp:
         self.excluded_company_var = StringVar()
         self.minimum_score_var = DoubleVar(value=0)
         self.filter_remote_var = BooleanVar(value=False)
+        self.work_mode_var = StringVar(value=translate("Усі формати"))
 
         filter_rows = (
             (
@@ -1054,11 +1167,6 @@ class JobCompassApp:
                 ),
             ),
             (
-                "Додаткові вимоги (не міста)",
-                self.keyword_var,
-                "Необов’язково. Напр.: SAP, Excel. Усі мають збігтися (І / AND).",
-            ),
-            (
                 "Локації (міста) *",
                 self.location_var,
                 (
@@ -1066,8 +1174,6 @@ class JobCompassApp:
                     "можна додати кілька міст, вони працюють як АБО / OR."
                 ),
             ),
-            ("Виключити слова", self.excluded_keyword_var, "Через кому."),
-            ("Виключити компанії", self.excluded_company_var, "Через кому."),
         )
         for row, (label, variable, hint) in enumerate(filter_rows):
             ttk.Label(filters, text=label).grid(row=row, column=0, sticky="nw", pady=5)
@@ -1169,16 +1275,52 @@ class JobCompassApp:
                     foreground="#555555",
                     wraplength=620,
                 ).grid(row=1, column=0, columnspan=3, sticky="w", pady=(2, 0))
-        ttk.Checkbutton(
-            filters,
-            text="Тільки remote (якщо вимкнено — remote, hybrid, office та невідомий формат)",
-            variable=self.filter_remote_var,
-        ).grid(row=5, column=1, sticky="w", padx=(12, 0), pady=5)
-        ttk.Label(filters, text="Мінімальна релевантність").grid(
-            row=6, column=0, sticky="w", pady=5
+        ttk.Label(filters, text="Формат роботи").grid(
+            row=2, column=0, sticky="w", pady=5
         )
-        score_frame = ttk.Frame(filters)
-        score_frame.grid(row=6, column=1, sticky="ew", padx=(12, 0), pady=5)
+        ttk.Combobox(
+            filters,
+            textvariable=self.work_mode_var,
+            values=tuple(_WORK_MODE_FILTER_OPTIONS),
+            state="readonly",
+            width=24,
+        ).grid(row=2, column=1, sticky="w", padx=(12, 0), pady=5)
+
+        self.advanced_search_frame = ttk.LabelFrame(
+            content, text="Розширені фільтри", padding=12
+        )
+        self.advanced_search_frame.grid(row=1, column=0, sticky="ew", pady=(10, 0))
+        self.advanced_search_frame.columnconfigure(1, weight=1)
+        for row, (label, variable, hint) in enumerate(
+            (
+                (
+                    "Додаткові вимоги (не міста)",
+                    self.keyword_var,
+                    "Необов’язково. Напр.: SAP, Excel. Усі мають збігтися (І / AND).",
+                ),
+                ("Виключити слова", self.excluded_keyword_var, "Через кому."),
+                ("Виключити компанії", self.excluded_company_var, "Через кому."),
+            )
+        ):
+            ttk.Label(self.advanced_search_frame, text=label).grid(
+                row=row, column=0, sticky="nw", pady=5
+            )
+            field = ttk.Frame(self.advanced_search_frame)
+            field.grid(row=row, column=1, sticky="ew", padx=(12, 0), pady=5)
+            field.columnconfigure(0, weight=1)
+            ttk.Entry(field, textvariable=variable).grid(row=0, column=0, sticky="ew")
+            ttk.Label(
+                field,
+                text=hint,
+                foreground="#555555",
+                wraplength=680,
+            ).grid(row=1, column=0, sticky="w", pady=(2, 0))
+
+        ttk.Label(
+            self.advanced_search_frame, text="Мінімальна релевантність"
+        ).grid(row=3, column=0, sticky="w", pady=5)
+        score_frame = ttk.Frame(self.advanced_search_frame)
+        score_frame.grid(row=3, column=1, sticky="ew", padx=(12, 0), pady=5)
         score_frame.columnconfigure(0, weight=1)
         ttk.Scale(
             score_frame,
@@ -1189,6 +1331,7 @@ class JobCompassApp:
         ).grid(row=0, column=0, sticky="ew")
         self.minimum_score_label = ttk.Label(score_frame, text="0%", width=5)
         self.minimum_score_label.grid(row=0, column=1, padx=(8, 0))
+        self.advanced_search_frame.grid_remove()
 
         search_actions = ttk.Frame(self.search_tab)
         search_actions.grid(row=3, column=0, sticky="ew", pady=(8, 0))
@@ -1197,9 +1340,15 @@ class JobCompassApp:
             text="Ctrl+Enter — почати пошук; Enter/Space — натиснути вибрану кнопку",
             foreground="#555555",
         ).pack(side="left")
+        self.advanced_filters_button = ttk.Button(
+            search_actions,
+            text="Розширені фільтри",
+            command=self._toggle_advanced_search_filters,
+        )
+        self.advanced_filters_button.pack(side="left", padx=(12, 0))
         self.search_button = ttk.Button(
             search_actions,
-            text="Знайти вакансії в інтернеті",
+            text="Знайти роботу",
             command=self._run_search,
             style="Primary.TButton",
         )
@@ -1656,6 +1805,35 @@ class JobCompassApp:
         self.language_var.set(language_label(language))
         self.status_var.set("Мову інтерфейсу змінено")
 
+    def _save_career_urls(self) -> None:
+        values = tuple(
+            line.strip()
+            for line in self.career_urls_text.get("1.0", "end-1c").splitlines()
+            if line.strip()
+        )
+        try:
+            self.store.save_career_urls(values)
+        except (OSError, ValueError) as error:
+            messagebox.showerror(
+                "Не вдалося зберегти career-сайти",
+                str(error),
+                parent=self.update_window or self.root,
+            )
+            return
+        registry_urls = _enabled_registry_urls(self.store)
+        self.online_sources = build_online_sources(
+            tuple(
+                dict.fromkeys(
+                    (*_enabled_manual_career_urls(self.store), *registry_urls)
+                )
+            )
+        )
+        self._refresh_sources()
+        self._refresh_source_registry()
+        self.status_var.set(
+            f"Ручні career-сайти збережено: {len(values)}"
+        )
+
     def _close_settings_dialog(self) -> None:
         if self.update_window is not None:
             try:
@@ -1883,10 +2061,41 @@ class JobCompassApp:
 
     def _build_settings_tab(self) -> None:
         self.settings_tab.columnconfigure(0, weight=1)
+        self.settings_tab.rowconfigure(0, weight=1)
+        self.settings_canvas = Canvas(
+            self.settings_tab,
+            highlightthickness=0,
+            borderwidth=0,
+        )
+        self.settings_canvas.grid(row=0, column=0, sticky="nsew")
+        settings_scrollbar = ttk.Scrollbar(
+            self.settings_tab,
+            orient="vertical",
+            command=self.settings_canvas.yview,
+        )
+        settings_scrollbar.grid(row=0, column=1, sticky="ns")
+        self.settings_canvas.configure(yscrollcommand=settings_scrollbar.set)
+        content = ttk.Frame(self.settings_canvas)
+        content.columnconfigure(0, weight=1)
+        settings_window = self.settings_canvas.create_window(
+            (0, 0), window=content, anchor="nw"
+        )
+        content.bind(
+            "<Configure>",
+            lambda _event: self.settings_canvas.configure(
+                scrollregion=self.settings_canvas.bbox("all")
+            ),
+        )
+        self.settings_canvas.bind(
+            "<Configure>",
+            lambda event: self.settings_canvas.itemconfigure(
+                settings_window, width=int(event.width)
+            ),
+        )
         ttk.Label(
-            self.settings_tab, text="Налаштування", style="Heading.TLabel"
+            content, text="Налаштування", style="Heading.TLabel"
         ).grid(row=0, column=0, sticky="w", pady=(0, 12))
-        storage = ttk.LabelFrame(self.settings_tab, text="Локальні дані", padding=12)
+        storage = ttk.LabelFrame(content, text="Локальні дані", padding=12)
         storage.grid(row=1, column=0, sticky="ew", pady=(0, 12))
         storage.columnconfigure(1, weight=1)
         ttk.Label(storage, text="Файл сховища").grid(row=0, column=0, sticky="w")
@@ -1903,7 +2112,7 @@ class JobCompassApp:
         ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(10, 0))
 
         profile_management = ttk.LabelFrame(
-            self.settings_tab, text="Керування профілями", padding=12
+            content, text="Керування профілями", padding=12
         )
         profile_management.grid(row=2, column=0, sticky="ew", pady=(0, 12))
         self.profile_management_status_var = LocalizedStringVar()
@@ -1929,7 +2138,7 @@ class JobCompassApp:
         ).grid(row=1, column=4, sticky="w", padx=(8, 0))
 
         connectors = ttk.LabelFrame(
-            self.settings_tab, text="Конектори та формати", padding=12
+            content, text="Конектори та формати", padding=12
         )
         connectors.grid(row=3, column=0, sticky="ew")
         ttk.Label(
@@ -1952,6 +2161,140 @@ class JobCompassApp:
             text="Імпортувати вакансії з JSON",
             command=self._import_jobs,
         ).grid(row=1, column=0, sticky="w", pady=(12, 0))
+
+        advanced = ttk.LabelFrame(
+            content, text="Розширені → Джерела", padding=12
+        )
+        advanced.grid(row=4, column=0, sticky="ew", pady=(12, 0))
+        advanced.columnconfigure(1, weight=1)
+        ttk.Label(
+            advanced,
+            text=(
+                "JobCompass автоматично знаходить і запам’ятовує career-сайти. "
+                "Поля нижче потрібні лише для діагностики або ручного додавання джерела."
+            ),
+            wraplength=900,
+        ).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 10))
+
+        self.sources_frame = ttk.LabelFrame(
+            advanced, text="Канали пошуку", padding=10
+        )
+        self.sources_frame.grid(row=1, column=0, sticky="nsw", padx=(0, 10))
+
+        manual_sources = ttk.LabelFrame(
+            advanced, text="Career URL — advanced/debug", padding=10
+        )
+        manual_sources.grid(row=1, column=1, sticky="nsew")
+        manual_sources.columnconfigure(0, weight=1)
+        ttk.Label(
+            manual_sources,
+            text=(
+                "Необов’язково. По одному URL у рядку; підтримуються Greenhouse, "
+                "Lever, Ashby, Personio, Workday, JSON-LD і дозволені HTML/sitemap."
+            ),
+            wraplength=650,
+        ).grid(row=0, column=0, sticky="w")
+        self.career_urls_text = Text(
+            manual_sources, width=70, height=4, wrap="none"
+        )
+        self.career_urls_text.grid(row=1, column=0, sticky="ew", pady=(6, 0))
+        self.career_urls_text.insert(
+            "1.0", "\n".join(self.store.load_career_urls())
+        )
+        ttk.Button(
+            manual_sources,
+            text="Зберегти ручні джерела",
+            command=self._save_career_urls,
+        ).grid(row=2, column=0, sticky="w", pady=(6, 0))
+
+        registry = ttk.LabelFrame(
+            advanced, text="Автоматично знайдені джерела", padding=10
+        )
+        registry.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(10, 0))
+        registry.columnconfigure(0, weight=1)
+        self.source_registry_count_var = LocalizedStringVar(
+            value="Відомих career-сайтів: 0"
+        )
+        ttk.Label(registry, textvariable=self.source_registry_count_var).grid(
+            row=0, column=0, sticky="w", pady=(0, 5)
+        )
+        self.source_registry_tree = ttk.Treeview(
+            registry,
+            columns=(
+                "company",
+                "type",
+                "region",
+                "status",
+                "checked",
+                "success",
+                "url",
+            ),
+            show="headings",
+            height=4,
+        )
+        for column, label, width in (
+            ("company", "Компанія", 180),
+            ("type", "Тип", 100),
+            ("region", "Країна / регіон", 160),
+            ("status", "Статус", 90),
+            ("checked", "Перевірено", 130),
+            ("success", "Останній успіх", 130),
+            ("url", "Career URL", 420),
+        ):
+            self.source_registry_tree.heading(column, text=label)
+            self.source_registry_tree.column(column, width=width, minwidth=70)
+        self.source_registry_tree.grid(row=1, column=0, sticky="ew")
+        registry_scroll = ttk.Scrollbar(
+            registry,
+            orient="horizontal",
+            command=self.source_registry_tree.xview,
+        )
+        registry_scroll.grid(row=2, column=0, sticky="ew")
+        self.source_registry_tree.configure(xscrollcommand=registry_scroll.set)
+        self._refresh_source_registry()
+
+    def _refresh_source_registry(self) -> None:
+        tree = getattr(self, "source_registry_tree", None)
+        if tree is None:
+            return
+        for item in tree.get_children():
+            tree.delete(item)
+        entries = self.store.list_source_registry()
+        for entry in entries:
+            checked = (
+                entry.last_checked.astimezone().strftime("%d.%m.%Y %H:%M")
+                if entry.last_checked
+                else "—"
+            )
+            success = (
+                entry.last_success.astimezone().strftime("%d.%m.%Y %H:%M")
+                if entry.last_success
+                else "—"
+            )
+            geography = " / ".join(
+                value for value in (entry.country, entry.region) if value
+            ) or "—"
+            tree.insert(
+                "",
+                "end",
+                iid=entry.source_id,
+                values=(
+                    entry.company or "—",
+                    entry.ats_type.value,
+                    geography,
+                    translate(
+                        _SOURCE_REGISTRY_STATUS_LABELS.get(
+                            entry.status.value, entry.status.value
+                        )
+                    ),
+                    checked,
+                    success,
+                    entry.career_url,
+                ),
+            )
+        self.source_registry_count_var.set(
+            f"Відомих career-сайтів: {len(entries)}"
+        )
 
     def _populate_profile(self, profile: CandidateProfile) -> None:
         values = {
@@ -2120,7 +2463,7 @@ class JobCompassApp:
             variable = BooleanVar(value=previous.get(source, True))
             self.source_vars[source] = variable
             ttk.Checkbutton(
-                self.sources_frame, text=source, variable=variable
+                self.sources_frame, text=_source_label(source), variable=variable
             ).pack(anchor="w", pady=2)
 
     def _run_search(self, *, scheduled: bool = False) -> None:
@@ -2165,7 +2508,11 @@ class JobCompassApp:
                 ),
                 excluded_keywords=_split_list(self.excluded_keyword_var.get()),
                 excluded_companies=_split_list(self.excluded_company_var.get()),
-                remote_only=self.filter_remote_var.get(),
+                remote_only=(
+                    _work_modes_from_label(self.work_mode_var.get())
+                    == (WorkMode.REMOTE,)
+                ),
+                work_modes=_work_modes_from_label(self.work_mode_var.get()),
                 minimum_score=round(self.minimum_score_var.get()),
             )
         except (OSError, ValueError) as error:
@@ -2176,12 +2523,15 @@ class JobCompassApp:
             return
 
         query = SearchQuery(
-            roles=filters.roles,
+            roles=generate_role_queries(filters.roles),
             locations=filters.locations,
             location_selections=filters.location_selections,
             location_radius_km=filters.location_radius_km,
             keywords=filters.keywords,
-            remote_only=filters.remote_only,
+            remote_only=(
+                filters.remote_only
+                or filters.work_modes == (WorkMode.REMOTE,)
+            ),
         )
         if not online_names:
             self.scheduled_search_running = scheduled
@@ -2199,7 +2549,7 @@ class JobCompassApp:
         )
         self.search_button.configure(state="disabled", text=translate("Пошук…"))
         self.status_var.set(
-            "Пошук у мережі: " + ", ".join(online_names) + " — зачекайте"
+            "Пошук розпочато: JobCompass перевіряє доступні джерела…"
         )
         worker = Thread(
             target=self._fetch_online_jobs,
@@ -2216,27 +2566,39 @@ class JobCompassApp:
         profile: CandidateProfile,
         filters: SearchFilters,
     ) -> None:
-        jobs: list[JobPosting] = []
-        counts: dict[str, int] = {}
-        errors: dict[str, str] = {}
         source_query = replace(query, keywords=())
-        for name in source_names:
-            try:
-                found = self.online_sources[name].search(source_query)
-            except Exception as error:
-                errors[name] = str(error)
-                continue
-            jobs.extend(found)
-            counts[name] = len(found)
-            partial_error = getattr(
-                self.online_sources[name], "last_partial_error", ""
+        try:
+            report = self.search_coordinator.search(
+                source_query,
+                selected_source_names=source_names,
+                on_progress=lambda progress: self.search_queue.put(
+                    ("progress", progress)
+                ),
             )
-            if partial_error:
-                errors[name] = (
-                    f"Отримано часткові результати; наступні сторінки недоступні: "
-                    f"{partial_error}"
+        except Exception as error:
+            self.search_queue.put(
+                (
+                    "complete",
+                    profile,
+                    filters,
+                    [],
+                    {},
+                    {"Automatic Discovery": str(error)},
+                    None,
                 )
-        self.search_queue.put((profile, filters, jobs, counts, errors))
+            )
+            return
+        self.search_queue.put(
+            (
+                "complete",
+                profile,
+                filters,
+                list(report.jobs),
+                report.counts,
+                report.errors,
+                report,
+            )
+        )
 
     def _poll_search_queue(self) -> None:
         try:
@@ -2244,6 +2606,41 @@ class JobCompassApp:
         except Empty:
             if self.search_running:
                 self.root.after(100, self._poll_search_queue)
+            return
+        if (
+            isinstance(payload, tuple)
+            and len(payload) == 4
+            and payload[0] == "scheduled_complete"
+        ):
+            _, profile_id, report, error = payload
+            self._complete_due_scheduled_search(profile_id, report, error)
+            return
+        if (
+            isinstance(payload, tuple)
+            and len(payload) == 2
+            and payload[0] == "progress"
+            and isinstance(payload[1], SearchProgress)
+        ):
+            progress = payload[1]
+            message = (
+                f"Перевірено джерел: {progress.checked_sources}/{progress.total_sources} · "
+                f"нових career-сайтів: {progress.discovered_sources} · "
+                f"вакансій зібрано: {progress.collected_jobs}"
+            )
+            self.source_summary_var.set(message)
+            self.status_var.set(message)
+            self.root.after(100, self._poll_search_queue)
+            return
+        if isinstance(payload, tuple) and payload and payload[0] == "complete":
+            _, profile, filters, jobs, counts, errors, report = payload
+            self._complete_search(
+                profile,
+                filters,
+                jobs,
+                counts,
+                errors,
+                discovery_report=report,
+            )
             return
         profile, filters, jobs, counts, errors = payload
         self._complete_search(profile, filters, jobs, counts, errors)
@@ -2255,8 +2652,18 @@ class JobCompassApp:
         online_jobs: list[JobPosting],
         counts: dict[str, int],
         errors: dict[str, str],
+        discovery_report: DiscoverySearchReport | None = None,
     ) -> None:
-        selected_online_sources = set(filters.sources) & set(self.online_sources)
+        if discovery_report is not None and online_jobs:
+            filters = replace(
+                filters,
+                sources=tuple(
+                    dict.fromkeys((*filters.sources, *(job.source for job in online_jobs)))
+                ),
+            )
+        selected_online_sources = (
+            set(filters.sources) & set(self.online_sources)
+        ) | {job.source for job in online_jobs}
         try:
             if online_jobs:
                 self.store.save_jobs(online_jobs)
@@ -2321,14 +2728,26 @@ class JobCompassApp:
             if self.scheduled_search_running and not self.store.is_guest:
                 successful_sources = {
                     name
-                    for name in selected_online_sources
+                    for name in counts
                     if name not in errors or counts.get(name, 0)
                 }
                 if successful_sources:
                     self.store.mark_schedule_run()
-                self.schedule_status_var.set(
-                    f"Автопошук завершено: нових вакансій — {new_count}"
-                )
+                    if self.store.active_profile_id is not None:
+                        self.schedule_retry_not_before.pop(
+                            self.store.active_profile_id, None
+                        )
+                    self.schedule_status_var.set(
+                        f"Автопошук завершено: нових вакансій — {new_count}"
+                    )
+                else:
+                    if self.store.active_profile_id is not None:
+                        self.schedule_retry_not_before[
+                            self.store.active_profile_id
+                        ] = datetime.now(timezone.utc) + timedelta(minutes=30)
+                    self.schedule_status_var.set(
+                        "Автопошук не оновив результати; повтор через 30 хвилин."
+                    )
             if self.ranked_jobs:
                 self.empty_results_message = ""
             elif broadly_matching and not matching_before_score:
@@ -2371,7 +2790,7 @@ class JobCompassApp:
             was_scheduled = self.scheduled_search_running
             self.scheduled_search_running = False
             self.search_button.configure(
-                state="normal", text=translate("Знайти вакансії в інтернеті")
+                state="normal", text=translate("Знайти роботу")
             )
 
         self.profile = profile
@@ -2381,7 +2800,7 @@ class JobCompassApp:
         self._load_schedule_controls()
         self.notebook.select(self.schedule_tab if was_scheduled else self.results_tab)
         source_summary = ", ".join(
-            f"{name}: {count}" for name, count in counts.items()
+            f"{_source_label(name)}: {count}" for name, count in counts.items()
         )
         diagnostic_parts: list[str] = []
         for name in self.online_sources:
@@ -2390,12 +2809,12 @@ class JobCompassApp:
             if name in errors:
                 if counts.get(name, 0):
                     diagnostic_parts.append(
-                        f"{name}: {counts[name]} (часткові результати)"
+                        f"{_source_label(name)}: {counts[name]} (часткові результати)"
                     )
                 else:
-                    diagnostic_parts.append(f"{name}: помилка")
+                    diagnostic_parts.append(f"{_source_label(name)}: помилка")
             else:
-                diagnostic_parts.append(f"{name}: {counts.get(name, 0)}")
+                diagnostic_parts.append(f"{_source_label(name)}: {counts.get(name, 0)}")
         self.source_diagnostics_prefix = (
             "Отримано після фільтрів джерел: "
             + (
@@ -2404,19 +2823,40 @@ class JobCompassApp:
                 else "онлайн-джерела не вибрано"
             )
         )
-        self.source_summary_var.set(
-            self.source_diagnostics_prefix
-            + f" | після об’єднання та фільтрів JobCompass: {len(self.ranked_jobs)}"
-        )
+        if discovery_report is not None:
+            simple_summary = (
+                f"Перевірено джерел: {discovery_report.checked_sources} · "
+                f"нових career-сайтів: {discovery_report.discovered_sources} · "
+                f"вакансій зібрано: {discovery_report.collected_jobs} · "
+                f"відповідають профілю: {len(self.ranked_jobs)}"
+            )
+            self.source_summary_var.set(simple_summary)
+            registry_urls = _enabled_registry_urls(self.store)
+            self.online_sources = build_online_sources(
+                tuple(
+                    dict.fromkeys(
+                        (*_enabled_manual_career_urls(self.store), *registry_urls)
+                    )
+                )
+            )
+            self._refresh_sources()
+            self._refresh_source_registry()
+        else:
+            self.source_summary_var.set(
+                self.source_diagnostics_prefix
+                + f" | після об’єднання та фільтрів JobCompass: {len(self.ranked_jobs)}"
+            )
         self.status_var.set(
-            f"Показано релевантних вакансій: {len(self.ranked_jobs)}"
+            simple_summary
+            if discovery_report is not None
+            else f"Показано релевантних вакансій: {len(self.ranked_jobs)}"
             + (f" | отримано: {source_summary}" if source_summary else "")
         )
-        if errors:
+        if errors and not online_jobs:
             messagebox.showwarning(
                 "Деякі джерела недоступні",
-                "Інші джерела оброблено.\n\n"
-                + "\n".join(f"{name}: {error}" for name, error in errors.items()),
+                "Пошук завершено, але доступні джерела не повернули вакансій. "
+                "Технічний стан джерел можна переглянути в розширених налаштуваннях.",
             )
         elif online_jobs and not self.ranked_jobs:
             messagebox.showinfo(
@@ -2511,7 +2951,7 @@ class JobCompassApp:
                         if job.location
                         else translate(_WORK_MODE_LABELS[job.work_mode.value])
                     ),
-                    job.source,
+                    _source_label(job.source),
                     ", ".join(result.matched_skills[:4]),
                     self._job_view_label(job_state.get("seen_at")),
                     applications.get(job.job_id, ApplicationStatus.FOUND.value),
@@ -2560,7 +3000,7 @@ class JobCompassApp:
                 f"{translate('Повнота доказів для оцінювання: ')}"
                 f"{result.evidence_coverage}%"
             ),
-            f"{translate('Джерело')}: {job.source}",
+            f"{translate('Джерело')}: {_source_label(job.source)}",
             (
                 f"{translate('Опубліковано')}: "
                 f"{self._format_published_at(job.published_at)}"
@@ -2666,6 +3106,12 @@ class JobCompassApp:
     def _check_due_schedule(self) -> None:
         if self.search_running or self.store.is_guest:
             return
+        profile_id = self.store.active_profile_id
+        if profile_id is None:
+            return
+        retry_at = self.schedule_retry_not_before.get(profile_id)
+        if retry_at is not None and datetime.now(timezone.utc) < retry_at:
+            return
         try:
             schedule = self.store.load_schedule()
         except ValueError as error:
@@ -2673,7 +3119,86 @@ class JobCompassApp:
             return
         if schedule.is_due():
             self.schedule_status_var.set("Запускаю прострочений щоденний пошук…")
-            self._run_search(scheduled=True)
+            self._start_due_scheduled_search(profile_id)
+
+    def _start_due_scheduled_search(self, profile_id: str) -> None:
+        """Run automatic search from saved data, never from unsaved GUI fields."""
+
+        self.search_running = True
+        self.scheduled_search_running = True
+        self.search_button.configure(state="disabled", text=translate("Пошук…"))
+        Thread(
+            target=self._fetch_due_scheduled_search,
+            args=(profile_id,),
+            daemon=True,
+        ).start()
+        self.root.after(100, self._poll_search_queue)
+
+    def _fetch_due_scheduled_search(self, profile_id: str) -> None:
+        try:
+            background_store = LocalJsonStore(self.store.path)
+            background_store.initialize()
+            report = run_scheduled_search(background_store, profile_id)
+        except Exception as error:
+            self.search_queue.put(
+                ("scheduled_complete", profile_id, None, str(error))
+            )
+            return
+        self.search_queue.put(("scheduled_complete", profile_id, report, ""))
+
+    def _complete_due_scheduled_search(
+        self,
+        profile_id: str,
+        report: ScheduledSearchReport | None,
+        error: str,
+    ) -> None:
+        self.search_running = False
+        self.scheduled_search_running = False
+        self.search_button.configure(
+            state="normal", text=translate("Знайти роботу")
+        )
+        self._load_schedule_controls()
+        successful_sources = (
+            {
+                name
+                for name in report.source_counts
+                if name not in report.errors or report.source_counts.get(name, 0)
+            }
+            if report is not None
+            else set()
+        )
+        if error or (
+            report is not None and not report.skipped and not successful_sources
+        ):
+            self.schedule_retry_not_before[profile_id] = (
+                datetime.now(timezone.utc) + timedelta(minutes=30)
+            )
+            details = error or "; ".join(report.errors.values())
+            self.schedule_status_var.set(
+                "Автопошук не оновив результати; повтор через 30 хвилин."
+                + (f" {details}" if details else "")
+            )
+        elif report is not None and report.skipped:
+            self.schedule_status_var.set(
+                "Запланований пошук ще не настав."
+            )
+        elif report is not None:
+            self.schedule_retry_not_before.pop(profile_id, None)
+            self.schedule_status_var.set(
+                f"Автопошук завершено: нових вакансій — {report.new_count}"
+            )
+        registry_urls = _enabled_registry_urls(self.store)
+        self.online_sources = build_online_sources(
+            tuple(
+                dict.fromkeys(
+                    (*_enabled_manual_career_urls(self.store), *registry_urls)
+                )
+            )
+        )
+        self._refresh_sources()
+        self._refresh_source_registry()
+        self._refresh_unseen_jobs()
+        self.notebook.select(self.schedule_tab)
 
     def _run_scheduled_search_now(self) -> None:
         if self.store.is_guest:
@@ -2711,7 +3236,7 @@ class JobCompassApp:
                     job.title,
                     job.company,
                     job.location,
-                    job.source,
+                    _source_label(job.source),
                     self._job_view_label(state.get("seen_at")),
                 ),
             )
@@ -3062,7 +3587,7 @@ class JobCompassApp:
                     job.company if job else "—",
                     application.status.value,
                     application.updated_at.astimezone().strftime("%d.%m.%Y %H:%M"),
-                    job.source if job else "—",
+                    _source_label(job.source) if job else "—",
                 ),
             )
 

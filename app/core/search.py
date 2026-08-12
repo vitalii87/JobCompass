@@ -10,7 +10,7 @@ from app.core.location import (
     build_location_queries,
 )
 from app.core.matcher import JobMatcher
-from app.core.models import CandidateProfile, JobPosting, MatchResult
+from app.core.models import CandidateProfile, JobPosting, MatchResult, WorkMode
 from app.core.taxonomy import text_matches_keyword
 
 
@@ -29,6 +29,7 @@ class SearchFilters:
     excluded_keywords: tuple[str, ...] = ()
     excluded_companies: tuple[str, ...] = ()
     remote_only: bool = False
+    work_modes: tuple[WorkMode, ...] = ()
     minimum_score: int = 0
 
     def __post_init__(self) -> None:
@@ -54,6 +55,12 @@ class SearchFilters:
         if any(not isinstance(item, LocationSelection) for item in selections):
             raise ValueError("location_selections must contain locations")
         object.__setattr__(self, "location_selections", selections)
+        modes: list[WorkMode] = []
+        for value in self.work_modes:
+            mode = value if isinstance(value, WorkMode) else WorkMode(value)
+            if mode not in modes:
+                modes.append(mode)
+        object.__setattr__(self, "work_modes", tuple(modes))
 
     @property
     def location_queries(self) -> tuple[LocationQuery, ...]:
@@ -90,6 +97,8 @@ def search_jobs(
         if source_keys and job.source.casefold() not in source_keys:
             continue
         if filters.remote_only and not job.is_remote:
+            continue
+        if filters.work_modes and job.work_mode not in filters.work_modes:
             continue
         if (
             location_keys

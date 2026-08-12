@@ -125,6 +125,22 @@ $applicationExecutable = Join-Path $applicationDirectory "JobCompass.exe"
 if (-not (Test-Path -LiteralPath $applicationExecutable)) {
     throw "JobCompass.exe was not created."
 }
+$tkinterBinary = Get-ChildItem `
+    -LiteralPath $applicationDirectory `
+    -Filter "_tkinter.pyd" `
+    -Recurse `
+    -ErrorAction SilentlyContinue |
+    Select-Object -First 1
+$tclRuntime = Get-ChildItem `
+    -LiteralPath $applicationDirectory `
+    -Directory `
+    -Recurse `
+    -ErrorAction SilentlyContinue |
+    Where-Object { $_.Name -match '^tcl\d' } |
+    Select-Object -First 1
+if (-not $tkinterBinary -or -not $tclRuntime) {
+    throw "The packaged application is missing Tkinter/Tcl. Use a full Windows Python installation with Tcl/Tk support."
+}
 
 Write-Host "Creating the portable ZIP..."
 $portableRoot = Join-Path $projectRoot ".portable-staging\JobCompass"

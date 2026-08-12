@@ -14,6 +14,10 @@ uses the standard library plus the local PDF parser `pypdf`.
 - local resume loading from JSON, TXT, DOCX, and text-based PDF files;
 - explainable 0–100% matching with evidence-coverage information;
 - online search through Bundesagentur für Arbeit, Arbeitnow, and Remotive;
+- one-button search through a parallel orchestrator, automatic discovery, and a
+  local registry of learned sources;
+- public Greenhouse, Lever, Ashby, Personio, Workday, schema.org/JobPosting, and
+  sitemap-backed career sources;
 - exact duplicate detection and optional normalized JSON import;
 - isolated candidate profiles with individual resumes, filters, results,
   favorites, application history, and cover-letter materials;
@@ -34,8 +38,8 @@ uses the standard library plus the local PDF parser `pypdf`.
 Release packages are available on the
 [GitHub Releases page](https://github.com/vitalii87/JobCompass/releases):
 
-- `JobCompass-0.10.3-Setup.exe` — per-user installer for Windows 10/11 x64;
-- `JobCompass-0.10.3-Portable.zip` — portable package;
+- `JobCompass-0.11.0-Setup.exe` — per-user installer for Windows 10/11 x64;
+- `JobCompass-0.11.0-Portable.zip` — portable package;
 - `SHA256SUMS.txt` — integrity checksums.
 
 The installer does not require administrator rights. It creates Start Menu and
@@ -122,14 +126,46 @@ disambiguate identical city names.
 
 One radius is applied independently to every selected city. Bundesagentur passes
 the radius to its server. Sources without geographic search may only filter by
-the returned location name. When **Remote only** is disabled, remote, hybrid,
-office, and unknown work modes are included.
+the returned location name. The work-mode selector supports all modes,
+remote-or-hybrid, remote only, hybrid only, or office only. All modes are used
+by default.
 
 The current connectors are:
 
 - Bundesagentur für Arbeit;
 - Arbeitnow;
 - Remotive.
+
+Career URLs are not part of the normal workflow. A user enters roles, selects
+cities/radius and a work mode, then clicks **Find jobs**. JobCompass concurrently
+checks its standard connectors and every previously learned source. It then
+examines employer links in returned jobs, permitted career pages, `robots.txt`,
+and sitemaps, detects the ATS, and can query a newly discovered source in the
+same search.
+
+The global local `source_registry` stores company, career URL, ATS type,
+country/region, last check, last success, and health status. Subsequent searches
+query known sources directly without repeating discovery. Manual URLs and source
+diagnostics are available only under `Settings → Advanced → Sources`.
+
+Supported detectors/readers cover public Greenhouse Job Board, Lever Postings,
+Ashby Job Board, employer-enabled Personio XML feeds, permitted Workday
+HTML/JSON-LD pages, and bounded same-domain HTML/JSON-LD or sitemap sources.
+
+All connectors implement the same `JobSource` contract and return normalized
+`JobPosting` objects. The orchestrator runs independent sources concurrently,
+limits concurrency and per-source time, and preserves successful partial results
+when another source fails. German and English role aliases are expanded locally
+without an AI API. When an aggregator and a company career page contain the same
+job, deduplication prefers the richer direct-company record.
+
+The UI reports simple progress only: checked sources, newly discovered career
+sites, collected jobs, and profile matches. An optional `WebDiscoveryProvider`
+contract is ready for a future official web-search API; JobCompass does not
+silently scrape a search engine as a keyless API.
+
+The generic reader honors `robots.txt` and does not crawl LinkedIn, Indeed, or
+StepStone. Only add pages whose owner permits automated reading.
 
 Source availability depends on external services and their rate limits. A failed
 source does not invalidate partial results returned by other sources.
@@ -227,8 +263,10 @@ python -m unittest discover -v
 powershell -ExecutionPolicy Bypass -File scripts\build_windows.ps1
 ```
 
-The build script creates a clean build environment, runs all tests, builds the
-one-folder executable, portable ZIP, NSIS installer, and SHA-256 manifest.
+The build requires a full Windows Python 3.11+ installation with Tcl/Tk. The
+script creates a clean build environment, runs all tests, builds the one-folder
+executable, portable ZIP, NSIS installer, and SHA-256 manifest, and fails if
+Tkinter/Tcl was not included in the package.
 
 ## Privacy and current boundaries
 
@@ -237,6 +275,8 @@ the local JSON storage. The current free mode does not call an AI API and does
 not store AI tokens.
 
 JobCompass does not currently implement OCR, a REST API, embeddings, Ollama,
-LinkedIn/Indeed/StepStone scraping, or automatic mass application submission.
+web-search APIs, Playwright, SQLite migration, LinkedIn/Indeed/StepStone scraping,
+or automatic mass application submission. The current career-site upgrade needs
+no API keys and adds no runtime dependency.
 External job pages remain under the user's control, and successful submission is
 confirmed by the user.

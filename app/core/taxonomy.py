@@ -143,9 +143,16 @@ _ROLE_ALIASES: dict[str, tuple[str, ...]] = {
     "Data Scientist": ("data scientist", "datenwissenschaftler"),
     "QA Engineer": (
         "qa engineer",
+        "qa automation",
         "test engineer",
+        "test automation engineer",
+        "software test engineer",
+        "sdet",
+        "python qa",
         "softwaretester",
         "testingenieur",
+        "testautomatisierer",
+        "automatisierungstester",
     ),
     "System Administrator": (
         "system administrator",
@@ -213,6 +220,16 @@ _ROLE_ALIASES: dict[str, tuple[str, ...]] = {
         "teamassistenz",
     ),
 }
+
+
+def role_query_variants(value: str) -> tuple[str, ...]:
+    """Return deterministic DE/EN search variants for one requested role."""
+    key = normalize_term(value)
+    for canonical, aliases in _ROLE_ALIASES.items():
+        normalized = {normalize_term(canonical), *(normalize_term(item) for item in aliases)}
+        if key in normalized:
+            return tuple(dict.fromkeys((value.strip(), canonical, *aliases)))
+    return (value.strip(),) if value.strip() else ()
 
 _LANGUAGE_ALIASES: dict[str, tuple[str, ...]] = {
     "German": ("german", "deutsch", "deutsche sprache", "deutschkenntnisse"),

@@ -10,7 +10,7 @@ from urllib.parse import quote
 
 from app.core.models import JobPosting, WorkMode
 from app.parsing import enrich_job_posting
-from app.sources.base import SearchQuery
+from app.sources.base import SearchQuery, SourceAccess, SourceCapabilities
 from app.sources.filtering import matches_query
 from app.sources.http import JsonHttpClient, SourceError
 from app.sources.utils import parse_published_at, text_value
@@ -18,6 +18,15 @@ from app.sources.utils import parse_published_at, text_value
 
 class BundesagenturSource:
     name = "Bundesagentur für Arbeit"
+    capabilities = SourceCapabilities(
+        access=SourceAccess.OFFICIAL_API,
+        supports_locations=True,
+        supports_radius=True,
+        supports_remote=True,
+        supports_pagination=True,
+        provides_full_description=True,
+        provides_published_at=True,
+    )
     search_endpoint = (
         "https://rest.arbeitsagentur.de/jobboerse/jobsuche-service/pc/v6/jobs"
     )
@@ -65,6 +74,8 @@ class BundesagenturSource:
 
         for role in roles:
             for location_query in locations:
+                if query.expired:
+                    break
                 location = (
                     location_query.source_query if location_query is not None else ""
                 )
@@ -109,7 +120,7 @@ class BundesagenturSource:
                         break
                 if len(rows_by_reference) >= self.max_results:
                     break
-            if len(rows_by_reference) >= self.max_results:
+            if query.expired or len(rows_by_reference) >= self.max_results:
                 break
 
         rows = list(rows_by_reference.values())

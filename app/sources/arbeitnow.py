@@ -6,7 +6,7 @@ from time import monotonic
 
 from app.core.models import JobPosting, WorkMode
 from app.parsing import enrich_job_posting
-from app.sources.base import SearchQuery
+from app.sources.base import SearchQuery, SourceAccess, SourceCapabilities
 from app.sources.filtering import matches_query
 from app.sources.http import JsonHttpClient, SourceError
 from app.sources.utils import html_to_text, parse_published_at, text_value
@@ -14,6 +14,14 @@ from app.sources.utils import html_to_text, parse_published_at, text_value
 
 class ArbeitnowSource:
     name = "Arbeitnow"
+    capabilities = SourceCapabilities(
+        access=SourceAccess.OFFICIAL_API,
+        supports_locations=True,
+        supports_remote=True,
+        supports_pagination=True,
+        provides_full_description=True,
+        provides_published_at=True,
+    )
     endpoint = "https://www.arbeitnow.com/api/job-board-api"
 
     def __init__(
@@ -33,6 +41,8 @@ class ArbeitnowSource:
         loaded_pages = 0
         self.last_partial_error = ""
         for page in range(1, self.max_pages + 1):
+            if query.expired:
+                break
             try:
                 payload = self._load_page(page)
             except SourceError as error:

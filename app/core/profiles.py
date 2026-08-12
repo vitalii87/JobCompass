@@ -95,6 +95,7 @@ class SavedSearchPreferences:
     excluded_keywords: tuple[str, ...] = ()
     excluded_companies: tuple[str, ...] = ()
     remote_only: bool = False
+    work_modes: tuple[str, ...] = ()
     minimum_score: int = 0
     result_sort: str = "За релевантністю"
 
@@ -122,6 +123,11 @@ class SavedSearchPreferences:
             object.__setattr__(self, "radius_km", radius)
         if not isinstance(self.remote_only, bool):
             raise ValueError("remote_only must be true or false")
+        allowed_modes = {"remote", "hybrid", "office", "unknown"}
+        modes = _clean_strings(self.work_modes, "work_modes")
+        if any(mode not in allowed_modes for mode in modes):
+            raise ValueError("work_modes contains an unsupported work mode")
+        object.__setattr__(self, "work_modes", modes)
         if not 0 <= int(self.minimum_score) <= 100:
             raise ValueError("minimum_score must be between 0 and 100")
         object.__setattr__(self, "minimum_score", int(self.minimum_score))
@@ -147,6 +153,7 @@ class SavedSearchPreferences:
             excluded_keywords=tuple(data.get("excluded_keywords") or ()),
             excluded_companies=tuple(data.get("excluded_companies") or ()),
             remote_only=data.get("remote_only", False),
+            work_modes=tuple(data.get("work_modes") or ()),
             minimum_score=data.get("minimum_score", 0),
             result_sort=_text(
                 data.get("result_sort", "За релевантністю"), "result_sort"
@@ -163,6 +170,7 @@ class SavedSearchPreferences:
             "excluded_keywords": list(self.excluded_keywords),
             "excluded_companies": list(self.excluded_companies),
             "remote_only": self.remote_only,
+            "work_modes": list(self.work_modes),
             "minimum_score": self.minimum_score,
             "result_sort": self.result_sort,
         }

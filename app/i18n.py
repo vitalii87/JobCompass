@@ -96,11 +96,26 @@ _UK_TO_EN = {
         "JobCompass searches selected online sources for current jobs, merges "
         "duplicates, and evaluates resume fit."
     ),
+    "Вкажіть професію, місто й формат роботи. JobCompass сам перевірить доступні джерела, знайде career-сайти, прибере дублікати та оцінить вакансії.": (
+        "Enter a role, city, and work mode. JobCompass will check available sources, "
+        "discover career sites, remove duplicates, and evaluate jobs automatically."
+    ),
+    "Пошук розпочато: JobCompass перевіряє доступні джерела…": (
+        "Search started: JobCompass is checking available sources…"
+    ),
 
     # Search and locations.
     "Пошук вакансій": "Job search",
     "Платформи / джерела": "Platforms / sources",
     "Фільтри": "Filters",
+    "Формат роботи": "Work mode",
+    "Усі формати": "All work modes",
+    "Remote або hybrid": "Remote or hybrid",
+    "Тільки remote": "Remote only",
+    "Тільки hybrid": "Hybrid only",
+    "Тільки office": "Office only",
+    "Розширені фільтри": "Advanced filters",
+    "Сховати розширені": "Hide advanced filters",
     "Додаткові вимоги (не міста)": "Additional requirements (not cities)",
     "Локації (міста) *": "Locations (cities) *",
     "Країна підказок": "Suggestion country",
@@ -117,6 +132,7 @@ _UK_TO_EN = {
     ),
     "Мінімальна релевантність": "Minimum match",
     "Знайти вакансії в інтернеті": "Find jobs online",
+    "Знайти роботу": "Find jobs",
     "Зберегти параметри": "Save settings",
     "Через кому.": "Comma-separated.",
     "Усі країни": "All countries",
@@ -406,11 +422,49 @@ _UK_TO_EN = {
         "Cover letters, AI/API mode: planned; tokens are not accepted and no "
         "external AI calls are made."
     ),
+    "Career-сайти компаній": "Company career sites",
+    "Greenhouse career-сайти": "Greenhouse career sites",
+    "Lever career-сайти": "Lever career sites",
+    "Ashby career-сайти": "Ashby career sites",
+    "Personio career-сайти": "Personio career sites",
+    "Workday career-сайти": "Workday career sites",
+    "Розширені → Джерела": "Advanced → Sources",
+    "Канали пошуку": "Search channels",
+    "Career URL — advanced/debug": "Career URL — advanced/debug",
+    "Зберегти ручні джерела": "Save manual sources",
+    "Автоматично знайдені джерела": "Automatically discovered sources",
+    "Компанія": "Company",
+    "Тип": "Type",
+    "Статус": "Status",
+    "Перевірено": "Checked",
+    "Країна / регіон": "Country / region",
+    "Останній успіх": "Last success",
+    "Знайдено": "Discovered",
+    "Активне": "Active",
+    "Помилка": "Error",
+    "Заблоковано": "Blocked",
+    "Вимкнено": "Disabled",
+    "JobCompass автоматично знаходить і запам’ятовує career-сайти. Поля нижче потрібні лише для діагностики або ручного додавання джерела.": (
+        "JobCompass automatically discovers and remembers career sites. The fields "
+        "below are only for diagnostics or manually adding a source."
+    ),
+    "Необов’язково. По одному URL у рядку; підтримуються Greenhouse, Lever, Ashby, Personio, Workday, JSON-LD і дозволені HTML/sitemap.": (
+        "Optional. One URL per line; Greenhouse, Lever, Ashby, Personio, Workday, "
+        "JSON-LD, and permitted HTML/sitemaps are supported."
+    ),
+    "По одному URL у рядку. JobCompass автоматично розпізнає Greenhouse, Lever, Ashby, Personio або прочитає дозволений schema.org/JobPosting.": (
+        "One URL per line. JobCompass automatically recognizes Greenhouse, Lever, "
+        "Ashby, and Personio, or reads permitted schema.org/JobPosting data."
+    ),
+    "Зберегти career-сайти": "Save career sites",
+    "Не вдалося зберегти career-сайти": "Could not save career sites",
     "Оновлення": "Updates",
     "Перевірити оновлення": "Check for updates",
     "Перевірити ще раз": "Check again",
     "Спробувати ще раз": "Try again",
     "Поточна версія: ": "Current version: ",
+    "Career-сайти збережено: ": "Career sites saved: ",
+    "Ручні career-сайти збережено: ": "Manual career sites saved: ",
     "Перевірте, чи доступна нова версія JobCompass.": (
         "Check whether a new JobCompass version is available."
     ),
@@ -474,6 +528,7 @@ _INLINE_UK_TO_EN = {
     "Останній запуск: ": "Last run: ",
     "Поточний статус: ": "Current status: ",
     "Поточна версія: ": "Current version: ",
+    "Career-сайти збережено: ": "Career sites saved: ",
     "Заявку підтверджено й записано: ": "Application confirmed and recorded: ",
     "Нову portable-версію збережено: ": "New portable version saved to: ",
     "Доступна нова версія ": "A new version is available: ",
@@ -483,6 +538,12 @@ _INLINE_UK_TO_EN = {
     "Знайдено варіантів: ": "Suggestions found: ",
     "Місто вже вибрано: ": "City already selected: ",
     "Активний профіль: ": "Active profile: ",
+    "Відомих career-сайтів: ": "Known career sites: ",
+    "Перевірено джерел: ": "Sources checked: ",
+    "нових career-сайтів: ": "new career sites: ",
+    "вакансій зібрано: ": "jobs collected: ",
+    "відповідають профілю: ": "matching the profile: ",
+    "Ручні career-сайти збережено: ": "Manual career sites saved: ",
 }
 
 # Messages assembled at runtime are kept explicit so localization never performs
@@ -507,6 +568,7 @@ _UK_TO_EN.update(
         "Закрийте JobCompass і розпакуйте нову portable-версію. Папку data та файл portable.flag потрібно зберегти.": "Close JobCompass and extract the new portable version. Keep the data folder and portable.flag file.",
         "Закрити програму й перервати поточний пошук?": "Close the application and interrupt the current search?",
         "Запускаю прострочений щоденний пошук…": "Starting the overdue daily search…",
+        "Запланований пошук ще не настав.": "The scheduled search is not due yet.",
         "Зберегти поточний профіль перед створенням нового?": "Save the current profile before creating a new one?",
         "Зберегти поточний профіль і налаштування перед перемиканням?": "Save the current profile and settings before switching?",
         "Зберегти поточний профіль і параметри перед виходом?": "Save the current profile and settings before exiting?",
@@ -596,6 +658,7 @@ _INLINE_UK_TO_EN.update(
         ": помилка": ": error",
         "» разом із його заявками, обраним і розкладом?": "’ together with its applications, favorites, and schedule?",
         "Автопошук завершено: нових вакансій — ": "Automatic search complete: new jobs — ",
+        "Автопошук не оновив результати; повтор через 30 хвилин.": "Automatic search did not update results; retrying in 30 minutes.",
         "Автопошук не запущено: ": "Automatic search not started: ",
         "Активовано профіль: ": "Profile activated: ",
         "До порога релевантності дійшло ": "Jobs reaching the match threshold: ",

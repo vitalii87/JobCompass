@@ -103,6 +103,52 @@ class I18nTests(unittest.TestCase):
         self.assertEqual(translate("Копія"), "Kopie")
         self.assertEqual(translate("Kopieren"), "Kopieren")
 
+    def test_career_site_settings_are_translated(self) -> None:
+        set_language("en")
+        self.assertEqual(
+            translate("Career-сайти компаній"), "Company career sites"
+        )
+
+        set_language("de")
+        self.assertEqual(
+            translate("Career-сайти компаній"),
+            "Karriereseiten von Unternehmen",
+        )
+        self.assertEqual(
+            translate("Personio career-сайти"), "Personio-Karriereseiten"
+        )
+
+    def test_simple_search_and_discovery_progress_are_translated(self) -> None:
+        set_language("en")
+        self.assertEqual(translate("Усі формати"), "All work modes")
+        self.assertEqual(translate("Розширені → Джерела"), "Advanced → Sources")
+        self.assertEqual(
+            translate("Перевірено джерел: 4 · вакансій зібрано: 12"),
+            "Sources checked: 4 · jobs collected: 12",
+        )
+
+        set_language("de")
+        self.assertEqual(translate("Remote або hybrid"), "Remote oder Hybrid")
+        self.assertEqual(
+            translate("Відомих career-сайтів: 3"),
+            "Bekannte Karriereseiten: 3",
+        )
+
+    def test_scheduled_retry_messages_are_translated(self) -> None:
+        set_language("en")
+        self.assertEqual(
+            translate(
+                "Автопошук не оновив результати; повтор через 30 хвилин. timeout"
+            ),
+            "Automatic search did not update results; retrying in 30 minutes. timeout",
+        )
+
+        set_language("de")
+        self.assertEqual(
+            translate("Запланований пошук ще не настав."),
+            "Die geplante Suche ist noch nicht fällig.",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

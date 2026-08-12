@@ -2,7 +2,11 @@ from __future__ import annotations
 
 import unittest
 
-from app.core.deduplication import deduplicate_jobs, job_fingerprint
+from app.core.deduplication import (
+    deduplicate_jobs,
+    deduplicate_jobs_with_aliases,
+    job_fingerprint,
+)
 from app.core.models import JobPosting
 
 
@@ -43,6 +47,32 @@ class DeduplicationTests(unittest.TestCase):
         )
 
         self.assertEqual(deduplicate_jobs([first, second]), [first])
+
+    def test_direct_career_record_replaces_aggregator_duplicate(self) -> None:
+        aggregator = JobPosting(
+            source="source-a",
+            external_id="1",
+            title="QA Engineer",
+            company="Example GmbH",
+            location="Stuttgart",
+            description="Short summary",
+        )
+        direct = JobPosting(
+            source="Company career pages",
+            external_id="https://example.test/jobs/qa",
+            title="QA Engineer",
+            company="Example GmbH",
+            location="Stuttgart",
+            url="https://example.test/jobs/qa",
+            description="Full job description from the company career page.",
+        )
+
+        self.assertEqual(deduplicate_jobs([aggregator, direct]), [direct])
+
+        unique, aliases = deduplicate_jobs_with_aliases([aggregator, direct])
+
+        self.assertEqual(unique, [direct])
+        self.assertEqual(aliases[aggregator.job_id], direct.job_id)
 
 
 if __name__ == "__main__":

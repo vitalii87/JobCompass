@@ -9,6 +9,7 @@ from unittest.mock import patch
 from app.core.location import LocationSelection
 from app.core.models import CandidateProfile, JobPosting, utc_now
 from app.core.profiles import SavedSearchPreferences, SearchSchedule
+from app.core.source_registry import AtsType, SourceRegistryEntry, SourceRegistryStatus
 from app.services.scheduled_search import fresh_scheduled_jobs, run_scheduled_search
 from app.storage import LocalJsonStore
 
@@ -100,8 +101,8 @@ class ScheduledSearchServiceTests(unittest.TestCase):
             active = store.create_profile("Vitalii")
 
             with patch(
-                "app.services.scheduled_search.ONLINE_SOURCE_TYPES",
-                (_FakeOnlineSource,),
+                "app.services.scheduled_search.build_online_sources",
+                return_value={"Fake": _FakeOnlineSource()},
             ):
                 first = run_scheduled_search(store, searched.profile_id, force=True)
                 second = run_scheduled_search(store, searched.profile_id, force=True)
@@ -112,6 +113,42 @@ class ScheduledSearchServiceTests(unittest.TestCase):
             self.assertEqual(store.active_profile_id, active.profile_id)
             store.set_profile_context(searched.profile_id)
             self.assertEqual(len(store.list_unseen_jobs()), 1)
+
+    def test_blocked_only_registry_source_does_not_mark_schedule_successful(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = LocalJsonStore(Path(directory) / "jobcompass.json")
+            profile = store.create_profile(
+                "Anna",
+                CandidateProfile(desired_roles=("Teamassistenz",)),
+            )
+            store.save_search_preferences(
+                SavedSearchPreferences(
+                    sources=("Company career pages",),
+                    roles=("Teamassistenz",),
+                    locations=(LocationSelection(name="Stuttgart"),),
+                )
+            )
+            store.save_schedule(SearchSchedule(enabled=True, daily_time="00:00"))
+            store.save_source_registry(
+                [
+                    SourceRegistryEntry(
+                        company="Blocked",
+                        career_url="https://blocked.example.test/careers",
+                        ats_type=AtsType.GENERIC_HTML,
+                        status=SourceRegistryStatus.BLOCKED,
+                    )
+                ]
+            )
+            store.save_career_urls(("https://blocked.example.test/careers",))
+
+            with patch(
+                "app.services.scheduled_search.build_online_sources",
+                return_value={},
+            ) as build_sources, self.assertRaises(ValueError):
+                run_scheduled_search(store, profile.profile_id, force=True)
+
+            build_sources.assert_called_once_with(())
+            self.assertIsNone(store.load_schedule().last_run_at)
 
 
 if __name__ == "__main__":

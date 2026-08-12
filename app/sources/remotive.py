@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from app.core.models import JobPosting, WorkMode
 from app.parsing import enrich_job_posting
-from app.sources.base import SearchQuery
+from app.sources.base import SearchQuery, SourceAccess, SourceCapabilities
 from app.sources.filtering import matches_query
 from app.sources.http import JsonHttpClient, SourceError
 from app.sources.utils import html_to_text, parse_published_at, text_value
@@ -12,29 +12,36 @@ from app.sources.utils import html_to_text, parse_published_at, text_value
 
 class RemotiveSource:
     name = "Remotive"
+    capabilities = SourceCapabilities(
+        access=SourceAccess.OFFICIAL_API,
+        supports_locations=True,
+        supports_remote=True,
+        provides_full_description=True,
+        provides_published_at=True,
+    )
     endpoint = "https://remotive.com/api/remote-jobs"
 
     def __init__(self, client: JsonHttpClient | None = None) -> None:
         self.client = client or JsonHttpClient()
 
     def search(self, query: SearchQuery) -> list[JobPosting]:
-        terms = query.roles or query.keywords or ("",)
         jobs: dict[str, JobPosting] = {}
-        for term in terms:
-            payload = self.client.get_json(self.endpoint, {"search": term})
-            rows = payload.get("jobs")
-            if not isinstance(rows, list):
-                raise SourceError("Remotive не повернув список вакансій")
-            for row in rows:
-                if not isinstance(row, dict):
-                    continue
-                job = self._normalize(row)
-                if (
-                    job is not None
-                    and self._location_is_compatible(job.location, query)
-                    and matches_query(job, query)
-                ):
-                    jobs[job.job_id] = job
+        # One unfiltered public-feed request is substantially friendlier to the
+        # service than one HTTP request per OR-role. Matching remains local.
+        payload = self.client.get_json(self.endpoint)
+        rows = payload.get("jobs")
+        if not isinstance(rows, list):
+            raise SourceError("Remotive не повернув список вакансій")
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            job = self._normalize(row)
+            if (
+                job is not None
+                and self._location_is_compatible(job.location, query)
+                and matches_query(job, query)
+            ):
+                jobs[job.job_id] = job
         return list(jobs.values())
 
     @staticmethod

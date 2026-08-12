@@ -29,6 +29,11 @@ from app.services.submission import (
     prepare_submission,
     resume_sha256,
 )
+from app.services.discovery_search import (
+    DiscoverySearchCoordinator,
+    DiscoverySearchReport,
+    SearchProgress,
+)
 
 __all__ = [
     "ResumeLoadResult",
@@ -53,4 +58,7 @@ __all__ = [
     "SubmissionPreparationError",
     "prepare_submission",
     "resume_sha256",
+    "DiscoverySearchCoordinator",
+    "DiscoverySearchReport",
+    "SearchProgress",
 ]

@@ -6,9 +6,12 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 
 from app.core.deduplication import deduplicate_jobs
-from app.core.models import JobPosting
+from app.core.models import JobPosting, WorkMode
 from app.core.search import SearchFilters, search_jobs
-from app.sources import ONLINE_SOURCE_TYPES, SearchQuery
+from app.core.query_generator import generate_role_queries
+from app.core.source_registry import SourceRegistryStatus, normalize_registry_url
+from app.sources import SearchQuery, build_online_sources
+from app.services.discovery_search import DiscoverySearchCoordinator
 from app.storage import LocalJsonStore
 
 
@@ -73,9 +76,27 @@ def run_scheduled_search(
         if profile is None:
             raise ValueError("Candidate profile is empty")
         preferences = store.load_search_preferences()
-        source_instances = {
-            source_type.name: source_type() for source_type in ONLINE_SOURCE_TYPES
+        registry_entries = store.list_source_registry()
+        blocked_urls = {
+            entry.career_url
+            for entry in registry_entries
+            if entry.status
+            in {SourceRegistryStatus.BLOCKED, SourceRegistryStatus.DISABLED}
         }
+        registry_urls = tuple(
+            entry.career_url
+            for entry in registry_entries
+            if entry.status
+            not in {SourceRegistryStatus.BLOCKED, SourceRegistryStatus.DISABLED}
+        )
+        manual_urls = tuple(
+            url
+            for url in store.load_career_urls()
+            if normalize_registry_url(url) not in blocked_urls
+        )
+        source_instances = build_online_sources(
+            tuple(dict.fromkeys((*manual_urls, *registry_urls)))
+        )
         source_names = preferences.sources or tuple(source_instances)
         online_names = tuple(
             name for name in source_names if name in source_instances
@@ -98,35 +119,43 @@ def run_scheduled_search(
             excluded_keywords=preferences.excluded_keywords,
             excluded_companies=preferences.excluded_companies,
             remote_only=preferences.remote_only,
+            work_modes=tuple(WorkMode(value) for value in preferences.work_modes),
             minimum_score=preferences.minimum_score,
         )
         query = SearchQuery(
-            roles=filters.roles,
+            roles=generate_role_queries(filters.roles),
             locations=filters.locations,
             location_selections=filters.location_selections,
             location_radius_km=filters.location_radius_km,
-            remote_only=filters.remote_only,
+            remote_only=(
+                filters.remote_only
+                or filters.work_modes == (WorkMode.REMOTE,)
+            ),
         )
         query = replace(query, keywords=())
-        online_jobs: list[JobPosting] = []
-        counts: dict[str, int] = {}
-        errors: dict[str, str] = {}
-        for name in online_names:
-            source = source_instances[name]
-            try:
-                found = source.search(query)
-            except Exception as error:
-                errors[name] = str(error)
-                continue
-            online_jobs.extend(found)
-            counts[name] = len(found)
-            partial_error = getattr(source, "last_partial_error", "")
-            if partial_error:
-                errors[name] = f"Partial results: {partial_error}"
+        batch = DiscoverySearchCoordinator(
+            store,
+            source_builder=build_online_sources,
+        ).search(
+            query,
+            selected_source_names=online_names,
+        )
+        online_jobs: list[JobPosting] = list(batch.jobs)
+        counts = batch.counts
+        errors = batch.errors
+        if online_jobs:
+            filters = replace(
+                filters,
+                sources=tuple(
+                    dict.fromkeys((*filters.sources, *(job.source for job in online_jobs)))
+                ),
+            )
 
         if online_jobs:
             store.save_jobs(online_jobs)
-        selected_online_sources = set(online_names)
+        selected_online_sources = set(online_names) | {
+            job.source for job in online_jobs
+        }
         current_jobs = deduplicate_jobs(
             [
                 *online_jobs,
@@ -156,7 +185,7 @@ def run_scheduled_search(
         ]
         new_count = store.record_job_discoveries(fresh_ids)
         successful_sources = {
-            name for name in online_names if name not in errors or counts.get(name, 0)
+            name for name in counts if name not in errors or counts.get(name, 0)
         }
         if successful_sources:
             store.mark_schedule_run()
