@@ -1731,7 +1731,7 @@ class JobCompassApp:
             wraplength=470,
             justify="left",
         ).grid(row=0, column=0, sticky="w")
-        self.update_notes_var = StringVar(value="")
+        self.update_notes_var = LocalizedStringVar(value="")
         ttk.Label(
             update_frame,
             textvariable=self.update_notes_var,
@@ -1979,11 +1979,21 @@ class JobCompassApp:
         if outcome == "error":
             if self.update_status_var is not None:
                 self.update_status_var.set(f"Не вдалося завантажити оновлення: {payload}")
-            messagebox.showerror(
-                "Оновлення",
-                str(payload),
-                parent=self.update_window or self.root,
+            fallback_message = (
+                f"{payload}\n\n"
+                "Автоматичне завантаження не вдалося. "
+                "Відкрити сторінку релізу у браузері?"
             )
+            if (
+                self.latest_release is not None
+                and self.latest_release.page_url
+                and messagebox.askyesno(
+                    "Оновлення",
+                    fallback_message,
+                    parent=self.update_window or self.root,
+                )
+            ):
+                webbrowser.open(self.latest_release.page_url)
             return
 
         path = Path(payload)

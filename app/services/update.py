@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import hashlib
+from http.client import IncompleteRead
 import json
 import re
 import socket
+import ssl
 import sys
+import time
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import BinaryIO
@@ -31,6 +34,7 @@ class UpdateError(RuntimeError):
 class ReleaseAsset:
     name: str
     download_url: str
+    api_url: str = ""
     size: int = 0
     sha256: str = ""
 
@@ -77,11 +81,16 @@ def is_newer_version(candidate: str, current: str = __version__) -> bool:
     return parts(candidate) > parts(current)
 
 
-def _request(url: str) -> Request:
+def _request(url: str, *, binary: bool = False) -> Request:
     return Request(
         url,
         headers={
-            "Accept": "application/vnd.github+json",
+            "Accept": (
+                "application/octet-stream"
+                if binary
+                else "application/vnd.github+json"
+            ),
+            "Accept-Encoding": "identity",
             "User-Agent": f"JobCompass/{__version__} (Windows updater)",
             "X-GitHub-Api-Version": "2022-11-28",
         },
@@ -89,15 +98,38 @@ def _request(url: str) -> Request:
     )
 
 
-def _open(request: Request, timeout: float) -> BinaryIO:
-    try:
-        return urlopen(request, timeout=timeout)  # type: ignore[return-value]
-    except HTTPError as error:
-        raise UpdateError(
-            f"GitHub повернув HTTP {error.code}: {error.reason}"
-        ) from error
-    except (URLError, TimeoutError, socket.timeout) as error:
-        raise UpdateError(f"Не вдалося підключитися до GitHub: {error}") from error
+def _open(
+    request: Request,
+    timeout: float,
+    *,
+    attempts: int = 3,
+) -> BinaryIO:
+    """Open a GitHub request with bounded retries for transient disconnects."""
+
+    last_error: BaseException | None = None
+    retryable_http_codes = {408, 429, 500, 502, 503, 504}
+    for attempt in range(max(1, attempts)):
+        try:
+            return urlopen(request, timeout=timeout)  # type: ignore[return-value]
+        except HTTPError as error:
+            if error.code not in retryable_http_codes:
+                raise UpdateError(
+                    f"GitHub повернув HTTP {error.code}: {error.reason}"
+                ) from error
+            last_error = error
+        except (
+            URLError,
+            TimeoutError,
+            socket.timeout,
+            ConnectionError,
+            ssl.SSLError,
+        ) as error:
+            last_error = error
+        if attempt + 1 < max(1, attempts):
+            time.sleep(0.4 * (2**attempt))
+    raise UpdateError(
+        f"Не вдалося підключитися до GitHub після повторних спроб: {last_error}"
+    ) from last_error
 
 
 def _read_checksums(asset: ReleaseAsset, timeout: float) -> dict[str, str]:
@@ -138,8 +170,13 @@ def check_latest_release(timeout: float = 20.0) -> ReleaseInfo:
                 continue
             name = str(item.get("name", "")).strip()
             url = str(item.get("browser_download_url", "")).strip()
+            api_url = str(item.get("url", "")).strip()
             if not name or not url.startswith("https://github.com/"):
                 continue
+            if not api_url.startswith(
+                "https://api.github.com/repos/vitalii87/JobCompass/releases/assets/"
+            ):
+                api_url = ""
             digest = str(item.get("digest") or "")
             sha256 = digest.removeprefix("sha256:").lower()
             if not re.fullmatch(r"[0-9a-f]{64}", sha256):
@@ -148,6 +185,7 @@ def check_latest_release(timeout: float = 20.0) -> ReleaseInfo:
                 ReleaseAsset(
                     name=name,
                     download_url=url,
+                    api_url=api_url,
                     size=int(item.get("size") or 0),
                     sha256=sha256,
                 )
@@ -156,7 +194,12 @@ def check_latest_release(timeout: float = 20.0) -> ReleaseInfo:
     checksum_asset = next(
         (asset for asset in assets if asset.name == "SHA256SUMS.txt"), None
     )
-    if checksum_asset is not None:
+    assets_missing_digest = [
+        asset
+        for asset in assets
+        if asset.name != "SHA256SUMS.txt" and not asset.sha256
+    ]
+    if checksum_asset is not None and assets_missing_digest:
         checksums = _read_checksums(checksum_asset, timeout)
         assets = [
             replace(asset, sha256=asset.sha256 or checksums.get(asset.name, ""))
@@ -172,7 +215,10 @@ def check_latest_release(timeout: float = 20.0) -> ReleaseInfo:
 
 
 def download_release_asset(
-    asset: ReleaseAsset, destination: str | Path, timeout: float = 60.0
+    asset: ReleaseAsset,
+    destination: str | Path,
+    timeout: float = 60.0,
+    attempts: int = 3,
 ) -> Path:
     """Download an asset atomically and reject it if SHA-256 does not match."""
 
@@ -183,20 +229,55 @@ def download_release_asset(
     target = Path(destination)
     target.parent.mkdir(parents=True, exist_ok=True)
     partial = target.with_suffix(target.suffix + ".part")
-    digest = hashlib.sha256()
-    try:
-        with _open(_request(asset.download_url), timeout) as response, partial.open(
-            "wb"
-        ) as output:
-            while chunk := response.read(1024 * 1024):
-                output.write(chunk)
-                digest.update(chunk)
-        if digest.hexdigest() != asset.sha256:
-            raise UpdateError(
-                "Контрольна сума завантаженого оновлення не збігається. Файл видалено."
-            )
-        partial.replace(target)
-    except Exception:
+    requests = [
+        *(
+            [_request(asset.api_url, binary=True)]
+            if asset.api_url
+            else []
+        ),
+        _request(asset.download_url, binary=True),
+    ]
+    last_error: BaseException | None = None
+    for attempt in range(max(1, attempts)):
         partial.unlink(missing_ok=True)
-        raise
-    return target
+        request = requests[attempt % len(requests)]
+        digest = hashlib.sha256()
+        received = 0
+        try:
+            with _open(request, timeout, attempts=2) as response, partial.open(
+                "wb"
+            ) as output:
+                while chunk := response.read(1024 * 1024):
+                    output.write(chunk)
+                    digest.update(chunk)
+                    received += len(chunk)
+            if asset.size and received != asset.size:
+                raise IncompleteRead(b"", abs(asset.size - received))
+            if digest.hexdigest() != asset.sha256:
+                raise UpdateError(
+                    "Контрольна сума завантаженого оновлення не збігається. Файл видалено."
+                )
+            partial.replace(target)
+            return target
+        except UpdateError as error:
+            last_error = error
+            if "Контрольна сума" in str(error):
+                partial.unlink(missing_ok=True)
+                raise
+        except (
+            URLError,
+            TimeoutError,
+            socket.timeout,
+            ConnectionError,
+            ssl.SSLError,
+            IncompleteRead,
+        ) as error:
+            last_error = error
+        finally:
+            partial.unlink(missing_ok=True)
+        if attempt + 1 < max(1, attempts):
+            time.sleep(0.5 * (2**attempt))
+    raise UpdateError(
+        "Не вдалося завантажити файл оновлення після повторних спроб. "
+        f"Перевірте інтернет-з’єднання або відкрийте сторінку релізу. {last_error}"
+    ) from last_error

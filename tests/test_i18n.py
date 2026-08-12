@@ -149,6 +149,23 @@ class I18nTests(unittest.TestCase):
             "Die geplante Suche ist noch nicht fällig.",
         )
 
+    def test_update_download_fallback_is_translated(self) -> None:
+        set_language("en")
+        self.assertEqual(
+            translate(
+                "Не вдалося підключитися до GitHub після повторних спроб: closed"
+            ),
+            "Could not connect to GitHub after several attempts: closed",
+        )
+
+        set_language("de")
+        self.assertEqual(
+            translate(
+                "\n\nАвтоматичне завантаження не вдалося. Відкрити сторінку релізу у браузері?"
+            ),
+            "\n\nDer automatische Download ist fehlgeschlagen. Release-Seite im Browser öffnen?",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
