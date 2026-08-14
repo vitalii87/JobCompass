@@ -3,12 +3,14 @@ Unicode True
 !include "MUI2.nsh"
 
 !ifndef APP_VERSION
-  !define APP_VERSION "0.11.1"
+  !define APP_VERSION "0.11.2"
 !endif
 
 !define APP_NAME "JobCompass"
 !define APP_PUBLISHER "JobCompass"
 !define APP_EXE "JobCompass.exe"
+!define START_MENU_FOLDER "${APP_NAME}"
+!define DESKTOP_LINK "${APP_NAME}.lnk"
 !define PROJECT_ROOT "${__FILEDIR__}\..\.."
 !define UNINSTALL_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\JobCompass"
 
@@ -45,18 +47,27 @@ VIAddVersionKey /LANG=1033 "LegalCopyright" "Copyright 2026 JobCompass contribut
 !insertmacro MUI_LANGUAGE "Ukrainian"
 !insertmacro MUI_LANGUAGE "English"
 
-Section "JobCompass" MainSection
+Function .onInit
+  ; Use the signed-in user's Shell folders. $DESKTOP therefore follows
+  ; Windows Known Folder redirection, including a Desktop moved to OneDrive.
   SetShellVarContext current
+FunctionEnd
+
+Function un.onInit
+  SetShellVarContext current
+FunctionEnd
+
+Section "JobCompass" MainSection
   SetOutPath "$INSTDIR"
   File /r "${PROJECT_ROOT}\dist\JobCompass\*"
   File /oname=README.md "${PROJECT_ROOT}\README.md"
   File /oname=README.en.md "${PROJECT_ROOT}\README.en.md"
 
   WriteUninstaller "$INSTDIR\Uninstall.exe"
-  CreateDirectory "$SMPROGRAMS\JobCompass"
-  CreateShortcut "$SMPROGRAMS\JobCompass\JobCompass.lnk" "$INSTDIR\${APP_EXE}"
-  CreateShortcut "$SMPROGRAMS\JobCompass\Uninstall JobCompass.lnk" "$INSTDIR\Uninstall.exe"
-  CreateShortcut "$DESKTOP\JobCompass.lnk" "$INSTDIR\${APP_EXE}"
+  CreateDirectory "$SMPROGRAMS\${START_MENU_FOLDER}"
+  CreateShortcut "$SMPROGRAMS\${START_MENU_FOLDER}\${APP_NAME}.lnk" "$INSTDIR\${APP_EXE}" "" "$INSTDIR\${APP_EXE}" 0
+  CreateShortcut "$SMPROGRAMS\${START_MENU_FOLDER}\Uninstall ${APP_NAME}.lnk" "$INSTDIR\Uninstall.exe"
+  CreateShortcut "$DESKTOP\${DESKTOP_LINK}" "$INSTDIR\${APP_EXE}" "" "$INSTDIR\${APP_EXE}" 0
 
   WriteRegStr HKCU "Software\JobCompass" "InstallDir" "$INSTDIR"
   WriteRegStr HKCU "${UNINSTALL_KEY}" "DisplayName" "JobCompass"
@@ -70,12 +81,11 @@ Section "JobCompass" MainSection
 SectionEnd
 
 Section "Uninstall"
-  SetShellVarContext current
   nsExec::ExecToLog '"$INSTDIR\${APP_EXE}" --data "$LOCALAPPDATA\JobCompass\data\jobcompass.json" remove-scheduled-tasks'
-  Delete "$DESKTOP\JobCompass.lnk"
-  Delete "$SMPROGRAMS\JobCompass\JobCompass.lnk"
-  Delete "$SMPROGRAMS\JobCompass\Uninstall JobCompass.lnk"
-  RMDir "$SMPROGRAMS\JobCompass"
+  Delete "$DESKTOP\${DESKTOP_LINK}"
+  Delete "$SMPROGRAMS\${START_MENU_FOLDER}\${APP_NAME}.lnk"
+  Delete "$SMPROGRAMS\${START_MENU_FOLDER}\Uninstall ${APP_NAME}.lnk"
+  RMDir "$SMPROGRAMS\${START_MENU_FOLDER}"
 
   DeleteRegKey HKCU "${UNINSTALL_KEY}"
   DeleteRegKey HKCU "Software\JobCompass"
